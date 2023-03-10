@@ -137,7 +137,7 @@ where
     (previous_instances, accumulator)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AggregationConfigParams {
     pub degree: u32,
     pub num_advice: usize,
