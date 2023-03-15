@@ -1,5 +1,5 @@
 //! Verifier strategy
-
+#[cfg(feature = "ipa")]
 pub mod ipa {
     //! IPA verifier strategy
 

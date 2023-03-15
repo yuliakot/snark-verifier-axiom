@@ -12,6 +12,7 @@ use crate::{
 use rand::Rng;
 use std::{fmt::Debug, marker::PhantomData};
 
+#[cfg(feature = "ipa")]
 pub mod ipa;
 pub mod kzg;
 
