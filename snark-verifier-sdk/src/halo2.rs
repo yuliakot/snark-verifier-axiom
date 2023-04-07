@@ -209,13 +209,14 @@ where
     let proof = gen_proof::<ConcreteCircuit, P, V>(params, pk, circuit, instances.clone(), None);
     // If we can't serialize the entire snark, at least serialize the proof
     #[cfg(not(feature = "halo2-axiom"))]
-    let proof = gen_proof::<ConcreteCircuit, P, V>(
-        params,
-        pk,
-        circuit,
-        instances.clone(),
-        path.map(|path| (path.join("instances").as_path(), path.join("proof").as_path())),
-    );
+    let proof = {
+        let path = path.map(|path| {
+            let path = path.as_ref().to_str().unwrap();
+            (format!("{path}.instances"), format!("{path}.proof"))
+        });
+        let paths = path.as_ref().map(|path| (Path::new(&path.0), Path::new(&path.1)));
+        gen_proof::<ConcreteCircuit, P, V>(params, pk, circuit, instances.clone(), paths)
+    };
 
     let snark = Snark::new(protocol, instances, proof);
 
@@ -228,6 +229,7 @@ where
         #[cfg(feature = "display")]
         end_timer!(write_time);
     }
+    #[allow(clippy::let_and_return)]
     snark
 }
 

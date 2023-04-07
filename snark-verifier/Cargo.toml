@@ -43,7 +43,7 @@ crossterm = { version = "0.25" }
 tui = { version = "0.19", default-features = false, features = ["crossterm"] }
 
 [features]
-default = ["loader_evm", "loader_halo2", "halo2-axiom", "display"]
+default = ["loader_evm", "loader_halo2", "halo2-pse", "display"]
 display = ["halo2-base/display", "halo2-ecc?/display"]
 loader_evm = ["dep:primitive-types", "dep:sha3", "dep:revm", "dep:bytes", "dep:rlp"]
 loader_halo2 = ["halo2-ecc"]
