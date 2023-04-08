@@ -3,7 +3,7 @@ use crate::{BITS, LIMBS};
 use halo2_base::{
     gates::{
         builder::{
-            assign_threads_in, CircuitBuilderStage, FlexGateConfigParams, GateThreadBuilder,
+            CircuitBuilderStage, FlexGateConfigParams, GateThreadBuilder,
             MultiPhaseThreadBreakPoints, RangeCircuitBuilder,
         },
         range::RangeConfig,
@@ -19,7 +19,7 @@ use halo2_base::{
         },
     },
     utils::ScalarField,
-    AssignedValue, SKIP_FIRST_PASS,
+    AssignedValue,
 };
 use itertools::Itertools;
 use rand::{rngs::StdRng, SeedableRng};
@@ -38,7 +38,6 @@ use snark_verifier::{
     verifier::SnarkVerifier,
 };
 use std::{
-    collections::HashMap,
     env::{set_var, var},
     fs::File,
     path::Path,
