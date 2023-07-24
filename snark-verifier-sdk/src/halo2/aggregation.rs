@@ -47,12 +47,24 @@ pub type Svk = KzgSuccinctVerifyingKey<G1Affine>;
 pub type BaseFieldEccChip<'chip> = halo2_ecc::ecc::BaseFieldEccChip<'chip, G1Affine>;
 pub type Halo2Loader<'chip> = loader::halo2::Halo2Loader<G1Affine, BaseFieldEccChip<'chip>>;
 
+pub struct SnarkAggregationWitness<'a> {
+    pub previous_instances: Vec<Vec<AssignedValue<Fr>>>,
+    pub accumulator: KzgAccumulator<G1Affine, Rc<Halo2Loader<'a>>>,
+    /// This returns the assigned `preprocessed` and `transcript_initial_state` values as a vector of assigned values, one for each aggregated snark.
+    /// These can then be exposed as public instances.
+    ///
+    /// This is only useful if preprocessed digest is loaded as witness (i.e., `preprocessed_as_witness` is true in `aggregate`), so we set it to `None` otherwise.
+    pub preprocessed_digest: Option<Vec<Vec<AssignedValue<Fr>>>>,
+}
+
 #[allow(clippy::type_complexity)]
 /// Core function used in `synthesize` to aggregate multiple `snarks`.
 ///  
 /// Returns the assigned instances of previous snarks and the new final pair that needs to be verified in a pairing check.
 /// For each previous snark, we concatenate all instances into a single vector. We return a vector of vectors,
 /// one vector per snark, for convenience.
+///
+/// - `preprocessed_as_witness`: flag for whether preprocessed digest (i.e., verifying key) should be loaded as witness (if false, loaded as constant)
 ///
 /// # Assumptions
 /// * `snarks` is not empty
@@ -61,7 +73,8 @@ pub fn aggregate<'a, AS>(
     loader: &Rc<Halo2Loader<'a>>,
     snarks: &[Snark],
     as_proof: &[u8],
-) -> (Vec<Vec<AssignedValue<Fr>>>, KzgAccumulator<G1Affine, Rc<Halo2Loader<'a>>>)
+    preprocessed_as_witness: bool,
+) -> SnarkAggregationWitness<'a>
 where
     AS: PolynomialCommitmentScheme<
             G1Affine,
@@ -86,6 +99,7 @@ where
     };
 
     let mut previous_instances = Vec::with_capacity(snarks.len());
+    let mut preprocessed_digest = Vec::with_capacity(snarks.len());
     // to avoid re-loading the spec each time, we create one transcript and clear the stream
     let mut transcript = PoseidonTranscript::<Rc<Halo2Loader<'a>>, &[u8]>::from_spec(
         loader,
@@ -96,7 +110,25 @@ where
     let mut accumulators = snarks
         .iter()
         .flat_map(|snark| {
-            let protocol = snark.protocol.loaded(loader);
+            let protocol = if preprocessed_as_witness {
+                snark.protocol.loaded_preprocessed_as_witness(loader)
+            } else {
+                snark.protocol.loaded(loader)
+            };
+            let inputs = protocol
+                .preprocessed
+                .iter()
+                .flat_map(|preprocessed| {
+                    let assigned = preprocessed.assigned();
+                    [assigned.x(), assigned.y()]
+                        .into_iter()
+                        .flat_map(|coordinate| coordinate.limbs().to_vec())
+                        .collect_vec()
+                })
+                .chain(
+                    protocol.transcript_initial_state.clone().map(|scalar| scalar.into_assigned()),
+                )
+                .collect_vec();
             let instances = assign_instances(&snark.instances);
 
             // read the transcript and perform Fiat-Shamir
@@ -115,6 +147,7 @@ where
             previous_instances.push(
                 instances.into_iter().flatten().map(|scalar| scalar.into_assigned()).collect(),
             );
+            preprocessed_digest.push(inputs);
 
             accumulator
         })
@@ -133,8 +166,9 @@ where
     } else {
         accumulators.pop().unwrap()
     };
+    let preprocessed_digest = preprocessed_as_witness.then(|| preprocessed_digest);
 
-    (previous_instances, accumulator)
+    SnarkAggregationWitness { previous_instances, accumulator, preprocessed_digest }
 }
 
 /// Same as `FlexGateConfigParams` except we assume a single Phase and default 'Vertical' strategy.
@@ -215,6 +249,7 @@ impl AggregationCircuit {
         lookup_bits: usize,
         params: &ParamsKZG<Bn256>,
         snarks: impl IntoIterator<Item = Snark>,
+        preprocessed_as_witness: bool,
     ) -> Self
     where
         AS: for<'a> Halo2KzgAccumulationScheme<'a>,
@@ -265,8 +300,8 @@ impl AggregationCircuit {
         let ecc_chip = BaseFieldEccChip::new(&fp_chip);
         let loader = Halo2Loader::new(ecc_chip, builder);
 
-        let (previous_instances, accumulator) =
-            aggregate::<AS>(&svk, &loader, &snarks, as_proof.as_slice());
+        let SnarkAggregationWitness { previous_instances, accumulator, preprocessed_digest } =
+            aggregate::<AS>(&svk, &loader, &snarks, as_proof.as_slice(), preprocessed_as_witness);
         let lhs = accumulator.lhs.assigned();
         let rhs = accumulator.rhs.assigned();
         let assigned_instances = lhs
@@ -312,7 +347,7 @@ impl AggregationCircuit {
     where
         AS: for<'a> Halo2KzgAccumulationScheme<'a>,
     {
-        let mut private = Self::new::<AS>(stage, break_points, lookup_bits, params, snarks);
+        let mut private = Self::new::<AS>(stage, break_points, lookup_bits, params, snarks, false);
         private.expose_previous_instances(has_prev_accumulator);
         private
     }
@@ -327,7 +362,7 @@ impl AggregationCircuit {
             .with(|conf| conf.borrow().lookup_bits)
             .unwrap_or(params.k() as usize - 1);
         let circuit =
-            Self::new::<AS>(CircuitBuilderStage::Keygen, None, lookup_bits, params, snarks);
+            Self::new::<AS>(CircuitBuilderStage::Keygen, None, lookup_bits, params, snarks, false);
         circuit.config(params.k(), Some(10));
         circuit
     }
@@ -350,6 +385,7 @@ impl AggregationCircuit {
             lookup_bits,
             params,
             snarks,
+            false,
         )
     }
 

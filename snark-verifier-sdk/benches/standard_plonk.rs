@@ -209,6 +209,7 @@ fn bench(c: &mut Criterion) {
                     lookup_bits,
                     params,
                     snarks.clone(),
+                    false,
                 );
                 let instances = agg_circuit.instances();
                 gen_proof_shplonk(params, pk, agg_circuit, instances, None)
@@ -226,6 +227,7 @@ fn bench(c: &mut Criterion) {
             lookup_bits,
             &params,
             snarks.clone(),
+            false,
         );
         let num_instances = agg_circuit.num_instance();
         let instances = agg_circuit.instances();
