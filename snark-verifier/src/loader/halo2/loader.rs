@@ -306,6 +306,17 @@ impl<C: CurveAffine, EccChip: EccInstructions<C>> LoadedScalar<C::Scalar> for Sc
     fn loader(&self) -> &Self::Loader {
         &self.loader
     }
+
+    fn pow_var(&self, exp: &Self, max_bits: usize) -> Self {
+        let loader = self.loader();
+        let res = loader.scalar_chip().pow_var(
+            &mut loader.ctx_mut(),
+            &self.assigned(),
+            &exp.assigned(),
+            max_bits,
+        );
+        loader.scalar_from_assigned(res)
+    }
 }
 
 impl<C: CurveAffine, EccChip: EccInstructions<C>> Debug for Scalar<C, EccChip> {

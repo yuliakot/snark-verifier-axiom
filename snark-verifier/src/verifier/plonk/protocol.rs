@@ -1,7 +1,7 @@
 use crate::{
     loader::{native::NativeLoader, LoadedScalar, Loader},
     util::{
-        arithmetic::{CurveAffine, Domain, Field, Fraction, Rotation},
+        arithmetic::{CurveAffine, Domain, Field, Fraction, PrimeField, Rotation},
         Itertools,
     },
 };
@@ -29,6 +29,14 @@ where
     ))]
     /// Working domain.
     pub domain: Domain<C::Scalar>,
+
+    #[serde(bound(
+        serialize = "L::LoadedScalar: Serialize",
+        deserialize = "L::LoadedScalar: Deserialize<'de>"
+    ))]
+    /// Optional: load `domain.n` as a witness
+    pub n_as_witness: Option<L::LoadedScalar>,
+
     #[serde(bound(
         serialize = "L::LoadedEcPoint: Serialize",
         deserialize = "L::LoadedEcPoint: Deserialize<'de>"
@@ -115,6 +123,7 @@ where
             .map(|transcript_initial_state| loader.load_const(transcript_initial_state));
         PlonkProtocol {
             domain: self.domain.clone(),
+            n_as_witness: None,
             preprocessed,
             num_instance: self.num_instance.clone(),
             num_witness: self.num_witness.clone(),
@@ -149,7 +158,10 @@ mod halo2 {
         pub fn loaded_preprocessed_as_witness<EccChip: EccInstructions<C>>(
             &self,
             loader: &Rc<Halo2Loader<C, EccChip>>,
+            load_n_as_witness: bool,
         ) -> PlonkProtocol<C, Rc<Halo2Loader<C, EccChip>>> {
+            let n_as_witness = load_n_as_witness
+                .then(|| loader.assign_scalar(C::Scalar::from(self.domain.n as u64)));
             let preprocessed = self
                 .preprocessed
                 .iter()
@@ -161,6 +173,7 @@ mod halo2 {
                 .map(|transcript_initial_state| loader.assign_scalar(*transcript_initial_state));
             PlonkProtocol {
                 domain: self.domain.clone(),
+                n_as_witness,
                 preprocessed,
                 num_instance: self.num_instance.clone(),
                 num_witness: self.num_witness.clone(),
@@ -201,21 +214,32 @@ where
     C: CurveAffine,
     L: Loader<C>,
 {
+    // if `n_as_witness` is Some, then we assume `n_as_witness` has value equal to `domain.n` (i.e., number of rows in the circuit)
+    // and is loaded as a witness instead of a constant.
     pub fn new(
         domain: &Domain<C::Scalar>,
         langranges: impl IntoIterator<Item = i32>,
         z: &L::LoadedScalar,
+        n_as_witness: &Option<L::LoadedScalar>,
     ) -> Self {
         let loader = z.loader();
 
-        let zn = z.pow_const(domain.n as u64);
+        let zn = if let Some(n) = n_as_witness.as_ref() {
+            z.pow_var(n, C::Scalar::S as usize + 1)
+        } else {
+            z.pow_const(domain.n as u64)
+        };
         let langranges = langranges.into_iter().sorted().dedup().collect_vec();
 
         let one = loader.load_one();
         let zn_minus_one = zn.clone() - &one;
         let zn_minus_one_inv = Fraction::one_over(zn_minus_one.clone());
 
-        let n_inv = loader.load_const(&domain.n_inv);
+        let n_inv = if let Some(n) = n_as_witness.as_ref() {
+            n.invert().expect("n is not zero")
+        } else {
+            loader.load_const(&domain.n_inv)
+        };
         let numer = zn_minus_one.clone() * &n_inv;
         let omegas = langranges
             .iter()

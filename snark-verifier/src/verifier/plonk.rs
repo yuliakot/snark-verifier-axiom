@@ -62,8 +62,12 @@ where
         proof: &Self::Proof,
     ) -> Result<Self::Output, Error> {
         let common_poly_eval = {
-            let mut common_poly_eval =
-                CommonPolynomialEvaluation::new(&protocol.domain, protocol.langranges(), &proof.z);
+            let mut common_poly_eval = CommonPolynomialEvaluation::new(
+                &protocol.domain,
+                protocol.langranges(),
+                &proof.z,
+                &protocol.n_as_witness,
+            );
 
             L::batch_invert(common_poly_eval.denoms());
             common_poly_eval.evaluate();
