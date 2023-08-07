@@ -1,23 +1,20 @@
 use application::ComputeFlag;
-use ark_std::{end_timer, start_timer};
-use halo2_base::gates::builder::{set_lookup_bits, CircuitBuilderStage, BASE_CONFIG_PARAMS};
+
+use halo2_base::gates::builder::{CircuitBuilderStage, BASE_CONFIG_PARAMS};
 use halo2_base::halo2_proofs;
 use halo2_base::halo2_proofs::arithmetic::Field;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
-use halo2_base::halo2_proofs::poly::commitment::Params;
 use halo2_base::utils::fs::gen_srs;
 use halo2_proofs::halo2curves as halo2_curves;
-use halo2_proofs::plonk::Circuit;
+
 use halo2_proofs::{halo2curves::bn256::Bn256, poly::kzg::commitment::ParamsKZG};
 use rand::rngs::OsRng;
+use snark_verifier_sdk::SHPLONK;
 use snark_verifier_sdk::{
-    evm::{evm_verify, gen_evm_proof_shplonk, gen_evm_verifier_shplonk},
     gen_pk,
     halo2::{aggregation::AggregationCircuit, gen_snark_shplonk},
     Snark,
 };
-use snark_verifier_sdk::{CircuitExt, SHPLONK};
-use std::path::Path;
 
 mod application {
     use super::halo2_curves::bn256::Fr;
@@ -26,7 +23,7 @@ mod application {
         plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance},
         poly::Rotation,
     };
-    use rand::RngCore;
+
     use snark_verifier_sdk::CircuitExt;
 
     #[derive(Clone, Copy)]
