@@ -57,6 +57,27 @@ pub struct SnarkAggregationWitness<'a> {
     pub preprocessed_digests: Option<Vec<Vec<AssignedValue<Fr>>>>,
 }
 
+/// Different possible stages of universality the aggregation circuit can support
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum VerifierUniversality {
+    /// Default: verifier is specific to a single circuit
+    None,
+    /// Preprocessed digest (commitments to fixed columns) is loaded as witness
+    PreprocessedAsWitness,
+    /// Preprocessed as witness and number of rows in the circuit `n` loaded as witness
+    Full,
+}
+
+impl VerifierUniversality {
+    pub fn preprocessed_as_witness(&self) -> bool {
+        self != &VerifierUniversality::None
+    }
+
+    pub fn n_as_witness(&self) -> bool {
+        self == &VerifierUniversality::Full
+    }
+}
+
 #[allow(clippy::type_complexity)]
 /// Core function used in `synthesize` to aggregate multiple `snarks`.
 ///  
@@ -65,6 +86,7 @@ pub struct SnarkAggregationWitness<'a> {
 /// one vector per snark, for convenience.
 ///
 /// - `preprocessed_as_witness`: flag for whether preprocessed digest (i.e., verifying key) should be loaded as witness (if false, loaded as constant)
+///     - If `preprocessed_as_witness` is true, number of circuit rows `domain.n` is also loaded as a witness
 ///
 /// # Assumptions
 /// * `snarks` is not empty
@@ -73,7 +95,7 @@ pub fn aggregate<'a, AS>(
     loader: &Rc<Halo2Loader<'a>>,
     snarks: &[Snark],
     as_proof: &[u8],
-    preprocessed_as_witness: bool,
+    universality: VerifierUniversality,
 ) -> SnarkAggregationWitness<'a>
 where
     AS: PolynomialCommitmentScheme<
@@ -107,12 +129,13 @@ where
         POSEIDON_SPEC.clone(),
     );
 
+    let preprocessed_as_witness = universality.preprocessed_as_witness();
     let mut accumulators = snarks
         .iter()
         .flat_map(|snark: &Snark| {
             let protocol = if preprocessed_as_witness {
                 // always load `domain.n` as witness if vkey is witness
-                snark.protocol.loaded_preprocessed_as_witness(loader, true)
+                snark.protocol.loaded_preprocessed_as_witness(loader, universality.n_as_witness())
             } else {
                 snark.protocol.loaded(loader)
             };
@@ -129,7 +152,18 @@ where
                 .chain(
                     protocol.transcript_initial_state.clone().map(|scalar| scalar.into_assigned()),
                 )
-                .chain(protocol.n_as_witness.clone().map(|n| n.into_assigned())) // If `n` is witness, add it as part of input
+                .chain(
+                    protocol
+                        .domain_as_witness
+                        .as_ref()
+                        .map(|domain| domain.n.clone().into_assigned()),
+                ) // If `n` is witness, add it as part of input
+                .chain(
+                    protocol
+                        .domain_as_witness
+                        .as_ref()
+                        .map(|domain| domain.gen.clone().into_assigned()),
+                ) // If `n` is witness, add the generator of the order `n` subgroup as part of input
                 .collect_vec();
             let instances = assign_instances(&snark.instances);
 
@@ -258,7 +292,7 @@ impl AggregationCircuit {
         lookup_bits: usize,
         params: &ParamsKZG<Bn256>,
         snarks: impl IntoIterator<Item = Snark>,
-        preprocessed_as_witness: bool,
+        universality: VerifierUniversality,
     ) -> Self
     where
         AS: for<'a> Halo2KzgAccumulationScheme<'a>,
@@ -310,7 +344,7 @@ impl AggregationCircuit {
         let loader = Halo2Loader::new(ecc_chip, builder);
 
         let SnarkAggregationWitness { previous_instances, accumulator, preprocessed_digests } =
-            aggregate::<AS>(&svk, &loader, &snarks, as_proof.as_slice(), preprocessed_as_witness);
+            aggregate::<AS>(&svk, &loader, &snarks, as_proof.as_slice(), universality);
         let lhs = accumulator.lhs.assigned();
         let rhs = accumulator.rhs.assigned();
         let assigned_instances = lhs
@@ -356,7 +390,14 @@ impl AggregationCircuit {
     where
         AS: for<'a> Halo2KzgAccumulationScheme<'a>,
     {
-        let mut private = Self::new::<AS>(stage, break_points, lookup_bits, params, snarks, false);
+        let mut private = Self::new::<AS>(
+            stage,
+            break_points,
+            lookup_bits,
+            params,
+            snarks,
+            VerifierUniversality::None,
+        );
         private.expose_previous_instances(has_prev_accumulator);
         private
     }
@@ -370,8 +411,14 @@ impl AggregationCircuit {
         let lookup_bits = BASE_CONFIG_PARAMS
             .with(|conf| conf.borrow().lookup_bits)
             .unwrap_or(params.k() as usize - 1);
-        let circuit =
-            Self::new::<AS>(CircuitBuilderStage::Keygen, None, lookup_bits, params, snarks, false);
+        let circuit = Self::new::<AS>(
+            CircuitBuilderStage::Keygen,
+            None,
+            lookup_bits,
+            params,
+            snarks,
+            VerifierUniversality::None,
+        );
         circuit.config(params.k(), Some(10));
         circuit
     }
@@ -394,7 +441,7 @@ impl AggregationCircuit {
             lookup_bits,
             params,
             snarks,
-            false,
+            VerifierUniversality::None,
         )
     }
 

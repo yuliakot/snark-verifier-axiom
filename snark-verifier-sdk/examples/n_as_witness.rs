@@ -1,13 +1,11 @@
-use application::ComputeFlag;
-
 use halo2_base::gates::builder::{CircuitBuilderStage, BASE_CONFIG_PARAMS};
 use halo2_base::halo2_proofs;
 use halo2_base::halo2_proofs::arithmetic::Field;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
+use halo2_base::halo2_proofs::poly::commitment::Params;
 use halo2_base::utils::fs::gen_srs;
 use halo2_proofs::halo2curves as halo2_curves;
 
-use halo2_proofs::{halo2curves::bn256::Bn256, poly::kzg::commitment::ParamsKZG};
 use rand::rngs::OsRng;
 use snark_verifier_sdk::halo2::aggregation::VerifierUniversality;
 use snark_verifier_sdk::SHPLONK;
@@ -72,15 +70,8 @@ mod application {
         }
     }
 
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub enum ComputeFlag {
-        All,
-        SkipFixed,
-        SkipCopy,
-    }
-
     #[derive(Clone)]
-    pub struct StandardPlonk(pub Fr, pub ComputeFlag);
+    pub struct StandardPlonk(pub Fr, pub usize);
 
     impl CircuitExt<Fr> for StandardPlonk {
         fn num_instance(&self) -> Vec<usize> {
@@ -116,7 +107,24 @@ mod application {
                     region.assign_advice(config.a, 0, Value::known(self.0));
                     region.assign_fixed(config.q_a, 0, -Fr::one());
                     region.assign_advice(config.a, 1, Value::known(-Fr::from(5u64)));
-                    if self.1 != ComputeFlag::SkipFixed {
+                    for (idx, column) in (1..).zip([
+                        config.q_a,
+                        config.q_b,
+                        config.q_c,
+                        config.q_ab,
+                        config.constant,
+                    ]) {
+                        region.assign_fixed(column, 1, Fr::from(idx as u64));
+                    }
+                    let a = region.assign_advice(config.a, 2, Value::known(Fr::one()));
+                    a.copy_advice(&mut region, config.b, 3);
+                    a.copy_advice(&mut region, config.c, 4);
+
+                    // assuming <= 10 blinding factors
+                    // fill in most of circuit with a computation
+                    /*let n = self.1;
+                    for offset in 5..n - 10 {
+                        region.assign_advice(config.a, offset, Value::known(-Fr::from(5u64)));
                         for (idx, column) in (1..).zip([
                             config.q_a,
                             config.q_b,
@@ -124,14 +132,9 @@ mod application {
                             config.q_ab,
                             config.constant,
                         ]) {
-                            region.assign_fixed(column, 1, Fr::from(idx as u64));
+                            region.assign_fixed(column, offset, Fr::from(idx as u64));
                         }
-                    }
-                    let a = region.assign_advice(config.a, 2, Value::known(Fr::one()));
-                    if self.1 != ComputeFlag::SkipCopy {
-                        a.copy_advice(&mut region, config.b, 3);
-                        a.copy_advice(&mut region, config.c, 4);
-                    }
+                    }*/
 
                     Ok(())
                 },
@@ -140,16 +143,16 @@ mod application {
     }
 }
 
-fn gen_application_snark(params: &ParamsKZG<Bn256>, flag: ComputeFlag) -> Snark {
-    let circuit = application::StandardPlonk(Fr::random(OsRng), flag);
+fn gen_application_snark(k: u32) -> Snark {
+    let params = gen_srs(k);
+    let circuit = application::StandardPlonk(Fr::random(OsRng), params.n() as usize);
 
-    let pk = gen_pk(params, &circuit, None);
-    gen_snark_shplonk(params, &pk, circuit, None::<&str>)
+    let pk = gen_pk(&params, &circuit, None);
+    gen_snark_shplonk(&params, &pk, circuit, None::<&str>)
 }
 
 fn main() {
-    let params_app = gen_srs(8);
-    let dummy_snark = gen_application_snark(&params_app, ComputeFlag::All);
+    let dummy_snark = gen_application_snark(8);
 
     let k = 15u32;
     let params = gen_srs(k);
@@ -164,25 +167,24 @@ fn main() {
         lookup_bits,
         &params,
         vec![dummy_snark],
-        VerifierUniversality::PreprocessedAsWitness,
+        VerifierUniversality::Full,
     );
     agg_circuit.config(k, Some(10));
 
     let pk = gen_pk(&params, &agg_circuit, None);
     let break_points = agg_circuit.break_points();
 
-    let snarks = [ComputeFlag::All, ComputeFlag::SkipFixed, ComputeFlag::SkipCopy]
-        .map(|flag| gen_application_snark(&params_app, flag));
-    for (i, snark) in snarks.into_iter().enumerate() {
+    let snarks = [8, 12, 15, 20].map(|k| (k, gen_application_snark(k)));
+    for (k, snark) in snarks {
         let agg_circuit = AggregationCircuit::new::<SHPLONK>(
             CircuitBuilderStage::Prover,
             Some(break_points.clone()),
             lookup_bits,
             &params,
             vec![snark],
-            VerifierUniversality::PreprocessedAsWitness,
+            VerifierUniversality::Full,
         );
         let _snark = gen_snark_shplonk(&params, &pk, agg_circuit, None::<&str>);
-        println!("snark {i} success");
+        println!("snark with k = {k} success");
     }
 }

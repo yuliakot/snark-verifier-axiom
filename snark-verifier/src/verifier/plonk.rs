@@ -15,7 +15,10 @@ use crate::{
         AccumulationDecider, AccumulationScheme, AccumulatorEncoding, PolynomialCommitmentScheme,
         Query,
     },
-    util::{arithmetic::CurveAffine, transcript::TranscriptRead},
+    util::{
+        arithmetic::{CurveAffine, Rotation},
+        transcript::TranscriptRead,
+    },
     verifier::{plonk::protocol::CommonPolynomialEvaluation, SnarkVerifier},
     Error,
 };
@@ -66,7 +69,7 @@ where
                 &protocol.domain,
                 protocol.langranges(),
                 &proof.z,
-                &protocol.n_as_witness,
+                &protocol.domain_as_witness,
             );
 
             L::batch_invert(common_poly_eval.denoms());
@@ -144,7 +147,7 @@ where
     L: Loader<C>,
     AS: AccumulationScheme<C, L>
         + PolynomialCommitmentScheme<C, L, Output = AS::Accumulator>
-        + CostEstimation<C, Input = Vec<Query<C::Scalar>>>,
+        + CostEstimation<C, Input = Vec<Query<Rotation>>>,
 {
     type Input = PlonkProtocol<C, L>;
 
@@ -172,7 +175,7 @@ where
     L: Loader<C>,
     AS: AccumulationScheme<C, L>
         + PolynomialCommitmentScheme<C, L, Output = AS::Accumulator>
-        + CostEstimation<C, Input = Vec<Query<C::Scalar>>>,
+        + CostEstimation<C, Input = Vec<Query<Rotation>>>,
 {
     type Input = PlonkProtocol<C, L>;
 
