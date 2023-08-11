@@ -1,8 +1,11 @@
-use halo2_base::gates::builder::{CircuitBuilderStage, BASE_CONFIG_PARAMS};
+use halo2_base::gates::GateChip;
+use halo2_base::gates::builder::{CircuitBuilderStage, BASE_CONFIG_PARAMS, GateThreadBuilder, RangeWithInstanceCircuitBuilder};
 use halo2_base::halo2_proofs;
 use halo2_base::halo2_proofs::arithmetic::Field;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
+use halo2_base::halo2_proofs::plonk::{keygen_vk, keygen_pk};
 use halo2_base::halo2_proofs::poly::commitment::Params;
+use halo2_base::safe_types::{RangeChip, RangeInstructions, GateInstructions};
 use halo2_base::utils::fs::gen_srs;
 use halo2_proofs::halo2curves as halo2_curves;
 
@@ -151,10 +154,39 @@ fn gen_application_snark(k: u32) -> Snark {
     gen_snark_shplonk(&params, &pk, circuit, None::<&str>)
 }
 
-fn main() {
-    let dummy_snark = gen_application_snark(8);
+fn generate_circuit(k: u32) -> Snark {
+    let mut builder = GateThreadBuilder::new(false);
+    let ctx = builder.main(0);
+    let range = RangeChip::<Fr>::default(8);
 
-    let k = 15u32;
+    let x = ctx.load_witness(Fr::from(14));
+    range.range_check(ctx, x, 64);
+    range.gate().add(ctx, x, x);
+
+    BASE_CONFIG_PARAMS.with(|config| {
+        config.borrow_mut().lookup_bits = Some((8).try_into().unwrap());
+        config.borrow_mut().k = k as usize;
+    });
+    builder.config(k.try_into().unwrap(), None);
+
+    let circuit = RangeWithInstanceCircuitBuilder::<Fr>::keygen(builder.clone(), vec![]);
+    let params = gen_srs(k);
+
+    let vk = keygen_vk(&params, &circuit).unwrap();
+    let pk = keygen_pk(&params, vk, &circuit).unwrap();
+    let breakpoints = circuit.break_points();
+
+    let circuit = RangeWithInstanceCircuitBuilder::<Fr>::prover(builder.clone(), vec![], breakpoints);
+    let snark = gen_snark_shplonk(&params, &pk, circuit, None::<&str>);
+    snark
+
+    
+}
+
+fn main() {
+    let dummy_snark = generate_circuit(14);
+
+    let k = 16u32;
     let params = gen_srs(k);
     let lookup_bits = k as usize - 1;
     BASE_CONFIG_PARAMS.with(|config| {
@@ -169,12 +201,12 @@ fn main() {
         vec![dummy_snark],
         VerifierUniversality::Full,
     );
-    agg_circuit.config(k, Some(10));
+    agg_circuit.config(k, Some(12));
 
     let pk = gen_pk(&params, &agg_circuit, None);
     let break_points = agg_circuit.break_points();
 
-    let snarks = [8, 12, 15, 20].map(|k| (k, gen_application_snark(k)));
+    let snarks = [12, 13].map(|k| (k, generate_circuit(k)));
     for (k, snark) in snarks {
         let agg_circuit = AggregationCircuit::new::<SHPLONK>(
             CircuitBuilderStage::Prover,
