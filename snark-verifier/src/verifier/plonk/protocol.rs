@@ -65,6 +65,7 @@ where
         serialize = "L::LoadedScalar: Serialize",
         deserialize = "L::LoadedScalar: Deserialize<'de>"
     ))]
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional: load `domain.n` and `domain.gen` as a witness
     pub domain_as_witness: Option<DomainAsWitness<C, L>>,
 
