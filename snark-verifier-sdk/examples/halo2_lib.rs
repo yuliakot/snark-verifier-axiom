@@ -12,6 +12,7 @@ use snark_verifier_sdk::{
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
+use snark_verifier_sdk::halo2::aggregation::VerifierUniversality;
 
 fn read_snark_from_file(file_name: &str) -> Snark {
     let snark_path = Path::new(file_name);
@@ -55,7 +56,7 @@ fn main() {
         lookup_bits,
         &params,
         vec![dummy_snark.clone()],
-        true,
+        VerifierUniversality::Full,
     );
     agg_circuit.config(k, Some(10));
 
@@ -78,7 +79,7 @@ fn main() {
             lookup_bits,
             &params,
             vec![snark],
-            true,
+            VerifierUniversality::Full,
         );
         let _snark = gen_snark_shplonk(&params, &pk, agg_circuit, None::<&str>);
         println!("snark {i} success");

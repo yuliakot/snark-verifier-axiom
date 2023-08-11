@@ -1,5 +1,4 @@
 use application::ComputeFlag;
-use ark_std::{end_timer, start_timer};
 use halo2_base::gates::builder::{CircuitBuilderStage, BASE_CONFIG_PARAMS};
 use halo2_base::halo2_proofs;
 use halo2_base::halo2_proofs::arithmetic::Field;
@@ -9,15 +8,13 @@ use halo2_proofs::halo2curves as halo2_curves;
 
 use halo2_proofs::{halo2curves::bn256::Bn256, poly::kzg::commitment::ParamsKZG};
 use rand::rngs::OsRng;
+use snark_verifier_sdk::halo2::aggregation::VerifierUniversality;
 use snark_verifier_sdk::SHPLONK;
 use snark_verifier_sdk::{
     gen_pk,
     halo2::{aggregation::AggregationCircuit, gen_snark_shplonk},
     Snark,
 };
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
-use std::path::Path;
 
 mod application {
     use super::halo2_curves::bn256::Fr;
@@ -172,7 +169,7 @@ fn main() {
     let params_app = gen_srs(8);
     let dummy_snark = gen_application_snark(&params_app, ComputeFlag::All);
 
-    let k = 14u32;
+    let k = 15u32;
     let params = gen_srs(k);
     let lookup_bits = k as usize - 1;
     BASE_CONFIG_PARAMS.with(|config| {
@@ -185,14 +182,12 @@ fn main() {
         lookup_bits,
         &params,
         vec![dummy_snark],
-        true,
+        VerifierUniversality::PreprocessedAsWitness,
     );
     agg_circuit.config(k, Some(10));
 
-    let start0 = start_timer!(|| "gen vk & pk");
-    let pk = gen_pk(&params, &agg_circuit, Some(Path::new("./examples/agg.pk")));
-    end_timer!(start0);
-    let break_points = gen_agg_break_points(agg_circuit, Path::new("./examples/break_points.json"));
+    let pk = gen_pk(&params, &agg_circuit, None);
+    let break_points = agg_circuit.break_points();
 
     let snarks = [ComputeFlag::All, ComputeFlag::SkipFixed, ComputeFlag::SkipCopy]
         .map(|flag| gen_application_snark(&params_app, flag));
@@ -203,27 +198,9 @@ fn main() {
             lookup_bits,
             &params,
             vec![snark],
-            true,
+            VerifierUniversality::PreprocessedAsWitness,
         );
         let _snark = gen_snark_shplonk(&params, &pk, agg_circuit, None::<&str>);
         println!("snark {i} success");
     }
-
-    /*
-    #[cfg(feature = "loader_evm")]
-    {
-        // do one more time to verify
-        let num_instances = agg_circuit.num_instance();
-        let instances = agg_circuit.instances();
-        let proof_calldata = gen_evm_proof_shplonk(&params, &pk, agg_circuit, instances.clone());
-
-        let deployment_code = gen_evm_verifier_shplonk::<AggregationCircuit<SHPLONK>>(
-            &params,
-            pk.get_vk(),
-            num_instances,
-            Some(Path::new("./examples/standard_plonk.yul")),
-        );
-        evm_verify(deployment_code, instances, proof_calldata);
-    }
-    */
 }

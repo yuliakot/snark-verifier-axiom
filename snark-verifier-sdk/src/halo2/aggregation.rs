@@ -54,7 +54,28 @@ pub struct SnarkAggregationWitness<'a> {
     /// These can then be exposed as public instances.
     ///
     /// This is only useful if preprocessed digest is loaded as witness (i.e., `preprocessed_as_witness` is true in `aggregate`), so we set it to `None` otherwise.
-    pub preprocessed_digest: Option<Vec<Vec<AssignedValue<Fr>>>>,
+    pub preprocessed_digests: Option<Vec<Vec<AssignedValue<Fr>>>>,
+}
+
+/// Different possible stages of universality the aggregation circuit can support
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum VerifierUniversality {
+    /// Default: verifier is specific to a single circuit
+    None,
+    /// Preprocessed digest (commitments to fixed columns) is loaded as witness
+    PreprocessedAsWitness,
+    /// Preprocessed as witness and number of rows in the circuit `n` loaded as witness
+    Full,
+}
+
+impl VerifierUniversality {
+    pub fn preprocessed_as_witness(&self) -> bool {
+        self != &VerifierUniversality::None
+    }
+
+    pub fn n_as_witness(&self) -> bool {
+        self == &VerifierUniversality::Full
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -65,6 +86,7 @@ pub struct SnarkAggregationWitness<'a> {
 /// one vector per snark, for convenience.
 ///
 /// - `preprocessed_as_witness`: flag for whether preprocessed digest (i.e., verifying key) should be loaded as witness (if false, loaded as constant)
+///     - If `preprocessed_as_witness` is true, number of circuit rows `domain.n` is also loaded as a witness
 ///
 /// # Assumptions
 /// * `snarks` is not empty
@@ -73,7 +95,7 @@ pub fn aggregate<'a, AS>(
     loader: &Rc<Halo2Loader<'a>>,
     snarks: &[Snark],
     as_proof: &[u8],
-    preprocessed_as_witness: bool,
+    universality: VerifierUniversality,
 ) -> SnarkAggregationWitness<'a>
 where
     AS: PolynomialCommitmentScheme<
@@ -99,7 +121,7 @@ where
     };
 
     let mut previous_instances = Vec::with_capacity(snarks.len());
-    let mut preprocessed_digest = Vec::with_capacity(snarks.len());
+    let mut preprocessed_digests = Vec::with_capacity(snarks.len());
     // to avoid re-loading the spec each time, we create one transcript and clear the stream
     let mut transcript = PoseidonTranscript::<Rc<Halo2Loader<'a>>, &[u8]>::from_spec(
         loader,
@@ -107,11 +129,13 @@ where
         POSEIDON_SPEC.clone(),
     );
 
+    let preprocessed_as_witness = universality.preprocessed_as_witness();
     let mut accumulators = snarks
         .iter()
-        .flat_map(|snark| {
+        .flat_map(|snark: &Snark| {
             let protocol = if preprocessed_as_witness {
-                snark.protocol.loaded_preprocessed_as_witness(loader)
+                // always load `domain.n` as witness if vkey is witness
+                snark.protocol.loaded_preprocessed_as_witness(loader, universality.n_as_witness())
             } else {
                 snark.protocol.loaded(loader)
             };
@@ -128,6 +152,18 @@ where
                 .chain(
                     protocol.transcript_initial_state.clone().map(|scalar| scalar.into_assigned()),
                 )
+                .chain(
+                    protocol
+                        .domain_as_witness
+                        .as_ref()
+                        .map(|domain| domain.n.clone().into_assigned()),
+                ) // If `n` is witness, add it as part of input
+                .chain(
+                    protocol
+                        .domain_as_witness
+                        .as_ref()
+                        .map(|domain| domain.gen.clone().into_assigned()),
+                ) // If `n` is witness, add the generator of the order `n` subgroup as part of input
                 .collect_vec();
             let instances = assign_instances(&snark.instances);
 
@@ -147,7 +183,7 @@ where
             previous_instances.push(
                 instances.into_iter().flatten().map(|scalar| scalar.into_assigned()).collect(),
             );
-            preprocessed_digest.push(inputs);
+            preprocessed_digests.push(inputs);
 
             accumulator
         })
@@ -166,9 +202,9 @@ where
     } else {
         accumulators.pop().unwrap()
     };
-    let preprocessed_digest = preprocessed_as_witness.then(|| preprocessed_digest);
+    let preprocessed_digests = preprocessed_as_witness.then_some(preprocessed_digests);
 
-    SnarkAggregationWitness { previous_instances, accumulator, preprocessed_digest }
+    SnarkAggregationWitness { previous_instances, accumulator, preprocessed_digests }
 }
 
 /// Same as `FlexGateConfigParams` except we assume a single Phase and default 'Vertical' strategy.
@@ -208,6 +244,11 @@ pub struct AggregationCircuit {
     // the public instances from previous snarks that were aggregated, now collected as PRIVATE assigned values
     // the user can optionally append these to `inner.assigned_instances` to expose them
     pub previous_instances: Vec<Vec<AssignedValue<Fr>>>,
+    /// This returns the assigned `preprocessed` and `transcript_initial_state` and `domain.n` values as a vector of assigned values, one for each aggregated snark.
+    /// These can then be exposed as public instances.
+    ///
+    /// This is only useful if preprocessed digest is loaded as witness (i.e., `preprocessed_as_witness` is true in `aggregate`), so we set it to `None` otherwise.
+    pub preprocessed_digests: Option<Vec<Vec<AssignedValue<Fr>>>>,
     // accumulation scheme proof, private input
     pub as_proof: Vec<u8>, // not sure this needs to be stored, keeping for now
 }
@@ -239,9 +280,11 @@ impl AggregationCircuit {
     /// Given snarks, this creates a circuit and runs the `GateThreadBuilder` to verify all the snarks.
     /// By default, the returned circuit has public instances equal to the limbs of the pair of elliptic curve points, referred to as the `accumulator`, that need to be verified in a final pairing check.
     ///
-    /// The user can optionally modify the circuit after calling this function to add more instances to `assigned_instances` to expose.
+    /// - If `preprocessed_as_witness` is set to `true`, then the verifying keys of each snark in `snarks` is loaded as a witness in the circuit. Moreover, the number of rows `n` of each snark in `snarks` is also loaded as a witness. By default, these witnesses are _private_ and returned in `self.preprocessed_
+    /// - The user can optionally modify the circuit after calling this function to add more instances to `assigned_instances` to expose.
     ///
-    /// Warning: will fail silently if `snarks` were created using a different multi-open scheme than `AS`
+    /// # Warning
+    /// Will fail silently if `snarks` were created using a different multi-open scheme than `AS`
     /// where `AS` can be either [`crate::SHPLONK`] or [`crate::GWC`] (for original PLONK multi-open scheme)
     pub fn new<AS>(
         stage: CircuitBuilderStage,
@@ -249,7 +292,7 @@ impl AggregationCircuit {
         lookup_bits: usize,
         params: &ParamsKZG<Bn256>,
         snarks: impl IntoIterator<Item = Snark>,
-        preprocessed_as_witness: bool,
+        universality: VerifierUniversality,
     ) -> Self
     where
         AS: for<'a> Halo2KzgAccumulationScheme<'a>,
@@ -300,8 +343,8 @@ impl AggregationCircuit {
         let ecc_chip = BaseFieldEccChip::new(&fp_chip);
         let loader = Halo2Loader::new(ecc_chip, builder);
 
-        let SnarkAggregationWitness { previous_instances, accumulator, preprocessed_digest: _ } =
-            aggregate::<AS>(&svk, &loader, &snarks, as_proof.as_slice(), preprocessed_as_witness);
+        let SnarkAggregationWitness { previous_instances, accumulator, preprocessed_digests } =
+            aggregate::<AS>(&svk, &loader, &snarks, as_proof.as_slice(), universality);
         let lhs = accumulator.lhs.assigned();
         let rhs = accumulator.rhs.assigned();
         let assigned_instances = lhs
@@ -333,7 +376,7 @@ impl AggregationCircuit {
             }
         };
         let inner = RangeWithInstanceCircuitBuilder::new(circuit, assigned_instances);
-        Self { inner, previous_instances, as_proof }
+        Self { inner, previous_instances, preprocessed_digests, as_proof }
     }
 
     pub fn public<AS>(
@@ -347,7 +390,14 @@ impl AggregationCircuit {
     where
         AS: for<'a> Halo2KzgAccumulationScheme<'a>,
     {
-        let mut private = Self::new::<AS>(stage, break_points, lookup_bits, params, snarks, false);
+        let mut private = Self::new::<AS>(
+            stage,
+            break_points,
+            lookup_bits,
+            params,
+            snarks,
+            VerifierUniversality::None,
+        );
         private.expose_previous_instances(has_prev_accumulator);
         private
     }
@@ -361,8 +411,14 @@ impl AggregationCircuit {
         let lookup_bits = BASE_CONFIG_PARAMS
             .with(|conf| conf.borrow().lookup_bits)
             .unwrap_or(params.k() as usize - 1);
-        let circuit =
-            Self::new::<AS>(CircuitBuilderStage::Keygen, None, lookup_bits, params, snarks, false);
+        let circuit = Self::new::<AS>(
+            CircuitBuilderStage::Keygen,
+            None,
+            lookup_bits,
+            params,
+            snarks,
+            VerifierUniversality::None,
+        );
         circuit.config(params.k(), Some(10));
         circuit
     }
@@ -385,7 +441,7 @@ impl AggregationCircuit {
             lookup_bits,
             params,
             snarks,
-            false,
+            VerifierUniversality::None,
         )
     }
 
