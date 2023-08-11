@@ -249,7 +249,7 @@ mod halo2_lib {
             exponent: &Self::AssignedInteger,
             max_bits: usize,
         ) -> Self::AssignedInteger {
-            GateInstructions::pow_var(self, ctx.main(0), *base, *exponent, max_bits)
+            unimplemented!()
         }
     }
 
