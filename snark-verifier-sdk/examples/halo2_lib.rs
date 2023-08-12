@@ -9,6 +9,7 @@ use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 use halo2_base::safe_types::{GateInstructions, RangeChip, RangeInstructions};
 use halo2_base::utils::fs::gen_srs;
 
+use itertools::Itertools;
 use snark_verifier_sdk::halo2::aggregation::VerifierUniversality;
 use snark_verifier_sdk::halo2::read_snark;
 use snark_verifier_sdk::SHPLONK;
@@ -24,7 +25,8 @@ use std::path::Path;
 fn generate_circuit(k: u32) -> Snark {
     let mut builder = GateThreadBuilder::new(false);
     let ctx = builder.main(0);
-    let range = RangeChip::<Fr>::default(8);
+    let lookup_bits = k as usize - 1;
+    let range = RangeChip::<Fr>::default(lookup_bits);
 
     let x = ctx.load_witness(Fr::from(14));
     range.range_check(ctx, x, 64);
@@ -40,7 +42,7 @@ fn generate_circuit(k: u32) -> Snark {
             num_advice_per_phase: vec![1],
             num_lookup_advice_per_phase: vec![1],
             num_fixed: 1,
-            lookup_bits: Some(8),
+            lookup_bits: Some(lookup_bits),
         };
     });
 
@@ -104,7 +106,7 @@ fn main() {
         "./examples/halo2_lib_snarks/poseidon.snark",
     ]
     .map(|file| read_snark(file).unwrap());*/
-    let snarks = [generate_circuit(14)];
+    let snarks = (14..17).map(|i| generate_circuit(i)).collect_vec();
     for (i, snark) in snarks.into_iter().enumerate() {
         let agg_circuit = AggregationCircuit::new::<SHPLONK>(
             CircuitBuilderStage::Prover,
