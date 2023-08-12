@@ -1,7 +1,3 @@
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
-use std::path::Path;
-
 use application::ComputeFlag;
 use halo2_base::gates::builder::{CircuitBuilderStage, BASE_CONFIG_PARAMS};
 use halo2_base::halo2_proofs;
