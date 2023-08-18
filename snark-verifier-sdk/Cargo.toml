@@ -1,6 +1,6 @@
 [package]
 name = "snark-verifier-sdk"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 
 [dependencies]
@@ -53,7 +53,7 @@ parallel = ["snark-verifier/parallel"]
 halo2-pse = ["snark-verifier/halo2-pse", "dep:serde_with"]
 halo2-axiom = ["snark-verifier/halo2-axiom"]
 
-zkevm = ["dep:zkevm-circuits", "dep:bus-mapping", "dep:mock", "dep:eth-types"]
+# zkevm = ["dep:zkevm-circuits", "dep:bus-mapping", "dep:mock", "dep:eth-types"]
 
 [[bench]]
 name = "standard_plonk"
@@ -68,4 +68,9 @@ harness = false
 [[bench]]
 name = "zkevm_plus_state"
 required-features = ["loader_halo2", "loader_evm", "zkevm", "halo2-pse"]
+harness = false
+
+[[bench]]
+name = "read_pk"
+required-features = ["loader_halo2"]
 harness = false

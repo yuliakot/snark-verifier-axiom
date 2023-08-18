@@ -1,4 +1,4 @@
-use halo2_base::gates::builder::{CircuitBuilderStage, BASE_CONFIG_PARAMS};
+use halo2_base::gates::builder::CircuitBuilderStage;
 use halo2_base::halo2_proofs;
 use halo2_base::halo2_proofs::arithmetic::Field;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
@@ -6,8 +6,9 @@ use halo2_base::halo2_proofs::poly::commitment::Params;
 use halo2_base::utils::fs::gen_srs;
 use halo2_proofs::halo2curves as halo2_curves;
 
-use rand::rngs::OsRng;
-use snark_verifier_sdk::halo2::aggregation::VerifierUniversality;
+use rand::rngs::StdRng;
+use rand::SeedableRng;
+use snark_verifier_sdk::halo2::aggregation::{AggregationConfigParams, VerifierUniversality};
 use snark_verifier_sdk::SHPLONK;
 use snark_verifier_sdk::{
     gen_pk,
@@ -122,7 +123,7 @@ mod application {
 
                     // assuming <= 10 blinding factors
                     // fill in most of circuit with a computation
-                    /*let n = self.1;
+                    let n = self.1;
                     for offset in 5..n - 10 {
                         region.assign_advice(config.a, offset, Value::known(-Fr::from(5u64)));
                         for (idx, column) in (1..).zip([
@@ -134,7 +135,7 @@ mod application {
                         ]) {
                             region.assign_fixed(column, offset, Fr::from(idx as u64));
                         }
-                    }*/
+                    }
 
                     Ok(())
                 },
@@ -144,8 +145,9 @@ mod application {
 }
 
 fn gen_application_snark(k: u32) -> Snark {
+    let rng = StdRng::seed_from_u64(0);
     let params = gen_srs(k);
-    let circuit = application::StandardPlonk(Fr::random(OsRng), params.n() as usize);
+    let circuit = application::StandardPlonk(Fr::random(rng), params.n() as usize);
 
     let pk = gen_pk(&params, &circuit, None);
     gen_snark_shplonk(&params, &pk, circuit, None::<&str>)
@@ -157,19 +159,15 @@ fn main() {
     let k = 15u32;
     let params = gen_srs(k);
     let lookup_bits = k as usize - 1;
-    BASE_CONFIG_PARAMS.with(|config| {
-        config.borrow_mut().lookup_bits = Some(lookup_bits);
-        config.borrow_mut().k = k as usize;
-    });
-    let agg_circuit = AggregationCircuit::new::<SHPLONK>(
+    let mut agg_circuit = AggregationCircuit::new::<SHPLONK>(
         CircuitBuilderStage::Keygen,
+        AggregationConfigParams { degree: k, lookup_bits, ..Default::default() },
         None,
-        lookup_bits,
         &params,
         vec![dummy_snark],
         VerifierUniversality::Full,
     );
-    agg_circuit.config(k, Some(10));
+    let agg_config = agg_circuit.config(Some(10));
 
     let pk = gen_pk(&params, &agg_circuit, None);
     let break_points = agg_circuit.break_points();
@@ -178,8 +176,8 @@ fn main() {
     for (k, snark) in snarks {
         let agg_circuit = AggregationCircuit::new::<SHPLONK>(
             CircuitBuilderStage::Prover,
+            agg_config,
             Some(break_points.clone()),
-            lookup_bits,
             &params,
             vec![snark],
             VerifierUniversality::Full,

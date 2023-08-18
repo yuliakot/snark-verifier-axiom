@@ -6,7 +6,7 @@ use crate::{
         PolynomialCommitmentScheme, Query,
     },
     util::{
-        arithmetic::{CurveAffine, FieldExt, Fraction, MultiMillerLoop, Rotation},
+        arithmetic::{CurveAffine, Fraction, MultiMillerLoop, PrimeField, Rotation},
         msm::Msm,
         transcript::TranscriptRead,
         Itertools,
@@ -27,6 +27,8 @@ pub struct Bdfg21;
 impl<M, L> PolynomialCommitmentScheme<M::G1Affine, L> for KzgAs<M, Bdfg21>
 where
     M: MultiMillerLoop,
+    M::G1Affine: CurveAffine<ScalarExt = M::Fr, CurveExt = M::G1>,
+    M::Fr: Ord,
     L: Loader<M::G1Affine>,
 {
     type VerifyingKey = KzgSuccinctVerifyingKey<M::G1Affine>;
@@ -62,7 +64,7 @@ where
                 .zip(coeffs.iter())
                 .map(|(set, coeff)| set.msm(coeff, commitments, &powers_of_mu));
 
-            msms.zip(proof.gamma.powers(sets.len()).into_iter())
+            msms.zip(proof.gamma.powers(sets.len()))
                 .map(|(msm, power_of_gamma)| msm * &power_of_gamma)
                 .sum::<Msm<_, _>>()
                 - Msm::base(&proof.w) * &coeffs[0].z_s
@@ -149,8 +151,8 @@ fn query_sets<S: PartialEq + Ord + Copy, T: Clone>(queries: &[Query<S, T>]) -> V
     })
 }
 
-fn query_set_coeffs<'a, F: FieldExt, T: LoadedScalar<F>>(
-    sets: &[QuerySet<'a, Rotation, T>],
+fn query_set_coeffs<F: PrimeField + Ord, T: LoadedScalar<F>>(
+    sets: &[QuerySet<Rotation, T>],
     z: &T,
     z_prime: &T,
 ) -> Vec<QuerySetCoeff<F, T>> {
@@ -246,7 +248,7 @@ struct QuerySetCoeff<F, T> {
 
 impl<F, T> QuerySetCoeff<F, T>
 where
-    F: FieldExt,
+    F: PrimeField + Ord,
     T: LoadedScalar<F>,
 {
     fn new(
@@ -268,7 +270,7 @@ where
                     .filter(|&(i, _)| i != j)
                     .map(|(_, shift_i)| (shift_j.1.clone() - &shift_i.1))
                     .reduce(|acc, value| acc * value)
-                    .unwrap_or_else(|| loader.load_const(&F::one()))
+                    .unwrap_or_else(|| loader.load_const(&F::ONE))
             })
             .collect_vec();
 

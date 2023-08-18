@@ -1,6 +1,6 @@
 use application::ComputeFlag;
 
-use halo2_base::gates::builder::{CircuitBuilderStage, BASE_CONFIG_PARAMS};
+use halo2_base::gates::builder::CircuitBuilderStage;
 use halo2_base::halo2_proofs;
 use halo2_base::halo2_proofs::arithmetic::Field;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
@@ -9,7 +9,7 @@ use halo2_proofs::halo2curves as halo2_curves;
 
 use halo2_proofs::{halo2curves::bn256::Bn256, poly::kzg::commitment::ParamsKZG};
 use rand::rngs::OsRng;
-use snark_verifier_sdk::halo2::aggregation::VerifierUniversality;
+use snark_verifier_sdk::halo2::aggregation::{AggregationConfigParams, VerifierUniversality};
 use snark_verifier_sdk::SHPLONK;
 use snark_verifier_sdk::{
     gen_pk,
@@ -154,19 +154,15 @@ fn main() {
     let k = 15u32;
     let params = gen_srs(k);
     let lookup_bits = k as usize - 1;
-    BASE_CONFIG_PARAMS.with(|config| {
-        config.borrow_mut().lookup_bits = Some(lookup_bits);
-        config.borrow_mut().k = k as usize;
-    });
-    let agg_circuit = AggregationCircuit::new::<SHPLONK>(
+    let mut agg_circuit = AggregationCircuit::new::<SHPLONK>(
         CircuitBuilderStage::Keygen,
+        AggregationConfigParams { degree: k, lookup_bits, ..Default::default() },
         None,
-        lookup_bits,
         &params,
         vec![dummy_snark],
         VerifierUniversality::PreprocessedAsWitness,
     );
-    agg_circuit.config(k, Some(10));
+    let agg_config = agg_circuit.config(Some(10));
 
     let pk = gen_pk(&params, &agg_circuit, None);
     let break_points = agg_circuit.break_points();
@@ -176,8 +172,8 @@ fn main() {
     for (i, snark) in snarks.into_iter().enumerate() {
         let agg_circuit = AggregationCircuit::new::<SHPLONK>(
             CircuitBuilderStage::Prover,
+            agg_config,
             Some(break_points.clone()),
-            lookup_bits,
             &params,
             vec![snark],
             VerifierUniversality::PreprocessedAsWitness,

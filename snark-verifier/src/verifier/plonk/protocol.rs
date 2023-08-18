@@ -280,7 +280,7 @@ where
             let n_inv = loader.load_const(&domain.n_inv);
             let omegas = lagranges
                 .iter()
-                .map(|&i| loader.load_const(&domain.rotate_scalar(C::Scalar::one(), Rotation(i))))
+                .map(|&i| loader.load_const(&domain.rotate_scalar(C::Scalar::ONE, Rotation(i))))
                 .collect_vec();
             (zn, n_inv, omegas)
         };
@@ -546,7 +546,7 @@ impl<F: Clone + Default> Sum for Expression<F> {
 
 impl<F: Field> One for Expression<F> {
     fn one() -> Self {
-        Expression::Constant(F::one())
+        Expression::Constant(F::ONE)
     }
 }
 

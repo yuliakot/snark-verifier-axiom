@@ -181,7 +181,7 @@ where
             BTreeMap::from_iter(rotations.into_iter().map(|rotation| {
                 (
                     rotation,
-                    loader.load_const(&protocol.domain.rotate_scalar(C::Scalar::one(), rotation)),
+                    loader.load_const(&protocol.domain.rotate_scalar(C::Scalar::ONE, rotation)),
                 )
             }))
         };

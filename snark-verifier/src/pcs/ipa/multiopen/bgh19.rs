@@ -5,7 +5,7 @@ use crate::{
         PolynomialCommitmentScheme, Query,
     },
     util::{
-        arithmetic::{CurveAffine, FieldExt, Fraction, Rotation},
+        arithmetic::{CurveAffine, Fraction, PrimeField, Rotation},
         msm::Msm,
         transcript::TranscriptRead,
         Itertools,
@@ -212,7 +212,7 @@ fn query_set_coeffs<F, T>(
     x_3: &T,
 ) -> Vec<QuerySetCoeff<F, T>>
 where
-    F: FieldExt,
+    F: PrimeField + Ord,
     T: LoadedScalar<F>,
 {
     let superset = BTreeMap::from_iter(sets.iter().flat_map(|set| set.shifts.clone()));
@@ -263,7 +263,12 @@ impl<'a, S, T> QuerySet<'a, S, T> {
             - Msm::constant(q_eval.clone())
     }
 
-    fn f_eval<F: FieldExt>(&self, coeff: &QuerySetCoeff<F, T>, q_eval: &T, powers_of_x_1: &[T]) -> T
+    fn f_eval<F: PrimeField>(
+        &self,
+        coeff: &QuerySetCoeff<F, T>,
+        q_eval: &T,
+        powers_of_x_1: &[T],
+    ) -> T
     where
         T: LoadedScalar<F>,
     {
@@ -300,7 +305,7 @@ struct QuerySetCoeff<F, T> {
 
 impl<F, T> QuerySetCoeff<F, T>
 where
-    F: FieldExt,
+    F: PrimeField + Ord,
     T: LoadedScalar<F>,
 {
     fn new(
@@ -320,7 +325,7 @@ where
                     .filter(|&(i, _)| i != j)
                     .map(|(_, shift_i)| (shift_j.1.clone() - &shift_i.1))
                     .reduce(|acc, value| acc * value)
-                    .unwrap_or_else(|| loader.load_const(&F::one()))
+                    .unwrap_or_else(|| loader.load_const(&F::ONE))
             })
             .collect_vec();
 
