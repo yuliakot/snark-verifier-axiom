@@ -39,6 +39,7 @@ impl<F: PrimeField> Query<F> {
     }
 }
 
+/// todo add batch open, batch verify
 /// Polynomial commitment scheme verifier.
 pub trait PolynomialCommitmentScheme<C, L>: Clone + Debug
 where
