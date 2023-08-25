@@ -59,7 +59,7 @@ fn verifier<F: ScalarField>(
     make_public: &mut Vec<AssignedValue<F>>,
 ) {
 
-    // todo import neccesary libs for verify sumcheck from plonkish repo
+    // todo import neccesary libs for verify sumcheck from snark-verifier/src/protostar/utils.rs and plonkish repo 
     pub(crate) fn verify_sum_check<F: PrimeField>(
         num_vars: usize,
         expression: &Expression<F>,
@@ -113,8 +113,8 @@ fn verifier<F: ScalarField>(
         Ok((points(&pcs_query, &x), evals))
     }
 
-    // import challenge api, transcript api halo2 lib
-    // import read commitment and batch verify from plonkish repo
+    // todo import challenge api, transcript api halo2 lib --  `halo2_proofs::transcript` and `crate::util::transcript`.
+    // todo import read commitment and batch verify from plonkish repo
     fn verify_decider(
         vp: &Self::VerifierParam,
         accumulator: &Self::AccumulatorInstance,
