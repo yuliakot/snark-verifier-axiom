@@ -1,5 +1,5 @@
 # Goal
-We only need to write the final IVC verifier circuit which runs the nark verfier and the decider on the final IVC proof. [IVC](split_acc.png)
+We only need to write the final IVC verifier circuit which runs the nark verfier and the decider on the final IVC proof. [IVC](split_acc.jpg)
 
 ## Challenges 
 1. Work over two cycles of curves so two aggregation circuits ![Working with cycles](coc.jpg)
