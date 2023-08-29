@@ -604,6 +604,186 @@ where
 }
 
 
+
+pub fn verify_ipa_grumpkin_ivc_with_last_nark(
+    &self,
+    layouter: &mut impl Layouter<C::Scalar>,
+    num_steps: Value<usize>,
+    initial_input: Value<Vec<C::Scalar>>,
+    output: Value<Vec<C::Scalar>>,
+    acc_before_last: Value<ProtostarAccumulatorInstance<C::Base, C::Secondary>>,
+    last_instance: Value<[C::Base; 2]>,
+    transcript: &mut impl TranscriptInstruction<C, TccChip = TccChip>,
+) -> Result<
+    (
+        TccChip::Assigned,
+        Vec<TccChip::Assigned>,
+        Vec<TccChip::Assigned>,
+        TccChip::Assigned,
+    ),
+    Error,
+> {
+    let tcc_chip = &self.tcc_chip;
+    let (num_steps, initial_input, output, comms, points, evals, h_ohs_from_last_nark) = self
+        .reduce_decider_with_last_nark(
+        layouter,
+        num_steps,
+        initial_input,
+        output,
+        acc_before_last,
+        last_instance,
+        transcript,
+    )?;
+    let (comm, point, eval) =
+        tcc_chip.multilinear_pcs_batch_verify(layouter, &comms, &points, &evals, transcript)?;
+    let comm = comm.iter().map(|(comm, scalar)| (*comm, scalar));
+
+    tcc_chip.verify_ipa(layouter, &self.vp.vp.pcs, comm, &point, &eval, transcript)?;
+
+    Ok((num_steps, initial_input, output, h_ohs_from_last_nark))
+}
+
+pub struct ProtostarIvcAggregator<C, Pcs, TccChip, HashChip>
+where
+    C: TwoChainCurve,
+    HyperPlonk<Pcs>: PlonkishBackend<C::Base>,
+    HashChip: HashInstruction<C>,
+{
+    vp_digest: C::Scalar,
+    vp: ProtostarVerifierParam<C::Base, HyperPlonk<Pcs>>,
+    arity: usize,
+    tcc_chip: TccChip,
+    hash_chip: HashChip,
+    _marker: PhantomData<(C, Pcs)>,
+}
+
+impl<C, Pcs, TccChip, HashChip> ProtostarIvcAggregator<C, Pcs, TccChip, HashChip>
+where
+    C: TwoChainCurve,
+    Pcs: PolynomialCommitmentScheme<C::Base>,
+    Pcs::Commitment: AsRef<C::Secondary>,
+    HyperPlonk<Pcs>:
+        PlonkishBackend<C::Base, VerifierParam = HyperPlonkVerifierParam<C::Base, Pcs>>,
+    TccChip: TwoChainCurveInstruction<C>,
+    HashChip: HashInstruction<C, TccChip = TccChip>,
+{
+    pub fn new(
+        vp_digest: C::Scalar,
+        vp: ProtostarVerifierParam<C::Base, HyperPlonk<Pcs>>,
+        arity: usize,
+        tcc_chip: TccChip,
+        hash_chip: HashChip,
+    ) -> Self {
+        Self {
+            vp_digest,
+            vp,
+            arity,
+            tcc_chip,
+            hash_chip,
+            _marker: PhantomData,
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn hash_state(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        num_steps: Value<usize>,
+        initial_input: Value<Vec<C::Scalar>>,
+        output: Value<Vec<C::Scalar>>,
+        acc: &AssignedProtostarAccumulatorInstance<
+            TccChip::AssignedBase,
+            TccChip::AssignedSecondary,
+        >,
+    ) -> Result<
+        (
+            TccChip::Assigned,
+            Vec<TccChip::Assigned>,
+            Vec<TccChip::Assigned>,
+            TccChip::Assigned,
+        ),
+        Error,
+    > {
+        let tcc_chip = &self.tcc_chip;
+        let hash_chip = &self.hash_chip;
+
+        let vp_digest = tcc_chip.assign_constant(layouter, self.vp_digest)?;
+        let num_steps = tcc_chip.assign_witness(
+            layouter,
+            num_steps.map(|num_steps| C::Scalar::from(num_steps as u64)),
+        )?;
+        let initial_input = initial_input
+            .transpose_vec(self.arity)
+            .into_iter()
+            .map(|input| tcc_chip.assign_witness(layouter, input))
+            .try_collect::<_, Vec<_>, _>()?;
+        let output = output
+            .transpose_vec(self.arity)
+            .into_iter()
+            .map(|input| tcc_chip.assign_witness(layouter, input))
+            .try_collect::<_, Vec<_>, _>()?;
+        let h = hash_chip.hash_assigned_state(
+            layouter,
+            &vp_digest,
+            &num_steps,
+            &initial_input,
+            &output,
+            acc,
+        )?;
+
+        Ok((num_steps, initial_input, output, h))
+    }
+
+impl<C, TccChip, HashChip>
+    ProtostarIvcVerifier<C, MultilinearIpa<C::Secondary>, TccChip, HashChip>
+where
+    C: TwoChainCurve,
+    C::Secondary: Serialize + DeserializeOwned,
+    C::Base: Hash + Serialize + DeserializeOwned,
+    TccChip: TwoChainCurveInstruction<C>,
+    HashChip: HashInstruction<C, TccChip = TccChip>,
+{
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
+    pub fn verify_ipa_grumpkin_ivc_snark(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        num_steps: Value<usize>,
+        initial_input: Value<Vec<C::Scalar>>,
+        output: Value<Vec<C::Scalar>>,
+        aggregator_1: Value<ProtostarAccumulatorInstance<C::Base, C::Secondary>>,
+        last_instance: Value<[C::Base; 2]>,
+        transcript: &mut impl TranscriptInstruction<C, TccChip = TccChip>,
+    ) -> Result<
+        (
+            TccChip::Assigned,
+            Vec<TccChip::Assigned>,
+            Vec<TccChip::Assigned>,
+            TccChip::Assigned,
+        ),
+        Error,
+    > {
+        let tcc_chip = &self.tcc_chip;
+        let (num_steps, initial_input, output, comms, points, evals, h_ohs_from_last_nark) = self
+            .reduce_decider_with_last_nark(
+            layouter,
+            num_steps,
+            initial_input,
+            output,
+            acc_before_last,
+            last_instance,
+            transcript,
+        )?;
+        let (comm, point, eval) =
+            tcc_chip.multilinear_pcs_batch_verify(layouter, &comms, &points, &evals, transcript)?;
+        let comm = comm.iter().map(|(comm, scalar)| (*comm, scalar));
+
+        tcc_chip.verify_ipa(layouter, &self.vp.vp.pcs, comm, &point, &eval, transcript)?;
+
+        Ok((num_steps, initial_input, output, h_ohs_from_last_nark))
+    }
+}
+
 trait ProtostarHyperPlonkUtil<C: TwoChainCurve>: TwoChainCurveInstruction<C> {
     fn hornor(
         &self,
@@ -1407,4 +1587,5 @@ trait ProtostarHyperPlonkUtil<C: TwoChainCurve>: TwoChainCurveInstruction<C> {
 
         Ok(instances.into_iter().next().unwrap())
     }
+}
 }
