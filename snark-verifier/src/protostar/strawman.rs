@@ -515,7 +515,7 @@ mod strawman {
             self.collector.borrow_mut().equal(lhs, rhs);
             Ok(())
         }
-
+       
         fn assign_constant(
             &self,
             _: &mut impl Layouter<C::Scalar>,

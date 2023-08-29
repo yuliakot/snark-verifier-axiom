@@ -20,9 +20,12 @@ use std::{
 
 use ark_std::{end_timer, start_timer};
 use common::*;
-use halo2_base::gates::flex_gate::GateStrategy;
+use halo2_base::{gates::flex_gate::GateStrategy, AssignedValue};
 use halo2_base::utils::fs::gen_srs;
-use halo2_base::{gates::{builder::FlexGateConfigParams, RangeChip, RangeInstructions}, halo2_proofs};
+use halo2_base::{gates::{builder::FlexGateConfigParams, RangeChip, RangeInstructions}, 
+    halo2_proofs,
+    QuantumCell::{Constant, Existing},
+};
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner},
     dev::MockProver,
@@ -45,6 +48,7 @@ use halo2_proofs::{
         Rotation, VerificationStrategy,
     },
 };
+
 use itertools::Itertools;
 use rand_chacha::rand_core::OsRng;
 use snark_verifier::{
@@ -100,11 +104,11 @@ type PoseidonTranscript<L, S> =
 
 // fn fe_to_limbs<F1: PrimeFieldBits, F2: PrimeField>(fe: F1, num_limb_bits: usize) -> Vec<F2> {
 // }
-use snark_verifier::{util::{arithmetic::{fe_to_limbs}}}
+use snark_verifier::util::arithmetic::fe_to_limbs;
 
 // pub fn fe_from_limbs<F1: PrimeFieldBits, F2: PrimeField>(
 // }
-use snark_verifier::{util::{arithmetic::{fe_from_limbs}}}
+use snark_verifier::util::arithmetic::fe_from_limbs;
 
 // fn x_y_is_identity<C: CurveAffine>(ec_point: &C) -> [C::Base; 3] {
 //     let coords = ec_point.coordinates().unwrap();
@@ -525,35 +529,28 @@ use snark_verifier::{util::{arithmetic::{fe_from_limbs}}}
 //         }
 //     }
 
+// todo figure out Layouter<C::Scalar> needed?
 impl<F: ScalarField> GateChip<C> for Chip<C> {
 
-    fn new() -> Self {
-        Chip {
-            chip: GateChip::default(),
-        }
+
+    fn constrain_equal(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        ctx: &mut Context<F>,
+        lhs: AssignedValue<F>,
+        rhs: AssignedValue<F>,
+    ) -> Result<(), Error> {
+        Ok(ctx.constrain_equal(Existing(lhs), Existing(rhs)))
     }
 
-    // fn constrain_equal(
-    //     &self,
-    //     _: &mut impl Layouter<C::Scalar>,
-    //     lhs: &Self::Assigned,
-    //     rhs: &Self::Assigned,
-    // ) -> Result<(), Error> {
-    //     lhs.value()
-    //         .zip(rhs.value())
-    //         .assert_if_known(|(lhs, rhs)| lhs == rhs);
-    //     self.collector.borrow_mut().equal(lhs, rhs);
-    //     Ok(())
-    // }
-
-    // fn assign_constant(
-    //     &self,
-    //     _: &mut impl Layouter<C::Scalar>,
-    //     constant: C::Scalar,
-    // ) -> Result<Self::Assigned, Error> {
-    //     let collector = &mut self.collector.borrow_mut();
-    //     Ok(collector.register_constant(constant))
-    // }
+    fn assign_constant(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        ctx: &mut Context<F>,
+        constant: F,
+    ) -> Result<(), Error> {
+        Ok(ctx.load_constant(constant))
+    }
 
     // fn assign_witness(
     //     &self,
@@ -565,20 +562,30 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
     //     Ok(collector.add_constant(&value, C::Scalar::ZERO))
     // }
 
+    fn assign_witness(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        ctx: &mut Context<F>,
+        witness: F,
+    ) -> Result<(), Error> {
+        Ok(ctx.load_witness(witness))
+    }
+
     // fn assert_if_known(&self, value: &Self::Assigned, f: impl FnOnce(&C::Scalar) -> bool) {
     //     value.value().assert_if_known(f)
     // }
 
-    // fn select(
-    //     &self,
-    //     _: &mut impl Layouter<C::Scalar>,
-    //     condition: &Self::Assigned,
-    //     when_true: &Self::Assigned,
-    //     when_false: &Self::Assigned,
-    // ) -> Result<Self::Assigned, Error> {
-    //     let collector = &mut self.collector.borrow_mut();
-    //     Ok(collector.select(condition, when_true, when_false))
-    // }
+    fn select(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        ctx: &mut Context<F>,
+        condition: AssignedValue<F>,
+        when_true: AssignedValue<F>,
+        when_false: AssignedValue<F>,
+    ) -> Result<AssignedValue<F>, Error> {
+        let chip: GateChip<F> = GateChip::default();
+        Ok(chip.select(ctx, Existing(when_true), Existing(when_false), Existing(condition)))
+    }
 
     // fn is_equal(
     //     &self,
@@ -589,6 +596,17 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
     //     let collector = &mut self.collector.borrow_mut();
     //     Ok(collector.is_equal(lhs, rhs))
     // }
+
+    fn is_equal(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        ctx: &mut Context<F>,
+        lhs: AssignedValue<F>,
+        rhs: AssignedValue<F>,
+    ) -> Result<AssignedValue<F>, Error> {
+        let chip: GateChip<F> = GateChip::default();
+        Ok(chip.is_equal(ctx, Existing(lhs), Existing(rhs)))
+    }
 
 
     // fn add(
@@ -604,37 +622,41 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
     fn add(
         &self,
         _: &mut impl Layouter<C::Scalar>,
+        ctx: &mut Context<F>,
         lhs: AssignedValue<F>,
         rhs: AssignedValue<F>,
-    ) -> Result<Self::Assigned, Error> {
-        let chip = &mut self.chip.borrow_mut();
-        Ok(chip.add(ctx, a, b));
+    ) -> Result<AssignedValue<F>, Error> {
+        let chip = GateChip::default();
+        Ok(chip.add(ctx, Existing(a), Existing(b)))
     }
 
     fn sub(
         &self,
         _: &mut impl Layouter<C::Scalar>,
+        ctx: &mut Context<F>,
         lhs: AssignedValue<F>,
         rhs: AssignedValue<F>,
-    ) -> Result<Self::Assigned, Error> {
-        let chip = &mut self.chip.borrow_mut();
-        Ok(chip.sub(ctx, a, b));
+    ) -> Result<AssignedValue<F>, Error> {
+        let chip = GateChip::default();
+        Ok(chip.sub(ctx, Existing(a), Existing(b)))
     }  
 
     fn mul(
         &self,
         _: &mut impl Layouter<C::Scalar>,
+        ctx: &mut Context<F>,
         lhs: AssignedValue<F>,
         rhs: AssignedValue<F>,
-    ) -> Result<Self::Assigned, Error> {
-        let chip = &mut self.chip.borrow_mut();
-        Ok(chip.mul(ctx, a, b));
+    ) -> Result<AssignedValue<F>, Error> {
+        let chip = GateChip::default();
+        Ok(chip.mul(ctx, Existing(a), Existing(b)))
     }
 
-
+    // todo go through  halo2-ecc/src/bigint/add_no_carry.rs and /bigint/mod.rs 
     fn add_base(
         &self,
         _: &mut impl Layouter<C::Scalar>,
+        ctx: &mut Context<F>,
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
     ) -> Result<Self::AssignedBase, Error> {
@@ -952,8 +974,6 @@ impl<C: CurveAffine, EccChip: EccInstructions<C>> Halo2Loader<C, EccChip> {
     //     }
     // }
 
-    transcript.write_ec_point(l_i.to_affine())?;
-
 }
 
 impl<'chip, C: CurveAffineExt> EccInstructions<C> for BaseFieldEccChip<'chip, C>
@@ -1053,5 +1073,6 @@ impl<'chip, C: CurveAffineExt> EccInstructions<C> for BaseFieldEccChip<'chip, C>
     }
 
 impl<C: CurveAffine, EccChip: EccInstructions<C>> Loader<C> for Rc<Halo2Loader<C, EccChip>> {}
+}
 
 
