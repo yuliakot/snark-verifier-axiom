@@ -85,9 +85,11 @@ use halo2_base::halo2_proofs::{
 use halo2_base::utils::ScalarField;
 use halo2_base::Context;
 use rand::rngs::OsRng;
+use halo2_ecc::bigint::{sub, big_less_than, add_no_carry, sub_no_carry, mul_no_carry,select, FixedOverflowInteger, ProperCrtUint, CRTInteger};
 
 pub const NUM_LIMBS: usize = 4;
 pub const NUM_LIMB_BITS: usize = 65;
+pub const NUM_LIMBS_LOG2_CEIL:usize = 2;
 const NUM_SUBLIMBS: usize = 5;
 const NUM_LOOKUPS: usize = 1;
 
@@ -414,6 +416,12 @@ use snark_verifier::util::arithmetic::fe_from_limbs;
 //     limbs: Vec<Witness<N>>,
 // }
 
+#[derive(Clone)]
+pub struct AssignedBase<F: ScalarField> {
+    scalar: CRTInteger<F>,
+    limbs: Vec<Witness<F>>,
+}
+
 // impl<F: PrimeField, N: PrimeField> AssignedBase<F, N> {
 //     fn assigned_cells(&self) -> impl Iterator<Item = &Witness<N>> {
 //         self.limbs.iter()
@@ -652,23 +660,176 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
         Ok(chip.mul(ctx, Existing(a), Existing(b)))
     }
 
-    // todo go through  halo2-ecc/src/bigint/add_no_carry.rs and /bigint/mod.rs 
-    fn add_base(
+    fn constrain_equal_base(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        lhs: &Self::AssignedBase,
+        rhs: &Self::AssignedBase,
+    ) -> Result<(), Error> {
+        lhs.scalar
+            .value()
+            .zip(rhs.scalar.value())
+            .assert_if_known(|(lhs, rhs)| lhs == rhs);
+        let collector = &mut self.collector.borrow_mut();
+        let mut integer_chip = IntegerChip::new(collector, &self.rns);
+        integer_chip.assert_equal(&lhs.scalar, &rhs.scalar);
+        Ok(())
+    }
+
+    fn assign_constant_base(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        constant: C::Base,
+    ) -> Result<Self::AssignedBase, Error> {
+        let collector = &mut self.collector.borrow_mut();
+        let mut integer_chip = IntegerChip::new(collector, &self.rns);
+        let scalar = integer_chip.register_constant(constant);
+        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        Ok(AssignedBase { scalar, limbs })
+    }
+
+    fn assign_witness_base(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        witness: Value<C::Base>,
+    ) -> Result<Self::AssignedBase, Error> {
+        let collector = &mut self.collector.borrow_mut();
+        let mut integer_chip = IntegerChip::new(collector, &self.rns);
+        let scalar = integer_chip.range(self.rns.from_fe(witness), Range::Remainder);
+        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        Ok(AssignedBase { scalar, limbs })
+    }
+
+    fn assert_if_known_base(
+        &self,
+        value: &Self::AssignedBase,
+        f: impl FnOnce(&C::Base) -> bool,
+    ) {
+        value.scalar.value().assert_if_known(f)
+    }
+
+    // fn select_base(
+    //     &self,
+    //     _: &mut impl Layouter<C::Scalar>,
+    //     condition: &Self::Assigned,
+    //     when_true: &Self::AssignedBase,
+    //     when_false: &Self::AssignedBase,
+    // ) -> Result<Self::AssignedBase, Error> {
+    //     let collector = &mut self.collector.borrow_mut();
+    //     let mut integer_chip = IntegerChip::new(collector, &self.rns);
+    //     let scalar = integer_chip.select(&when_true.scalar, &when_false.scalar, condition);
+    //     let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+    //     Ok(AssignedBase { scalar, limbs })
+    // }
+
+    fn select_base(
         &self,
         _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
+        condition: Assigned<F>,
+        when_true: &Self::AssignedBase,
+        when_false: &Self::AssignedBase,
+    ) -> Result<&Self::AssignedBase, Error> {
+        let (scalar) = select::crt(
+        gate,
+        ctx,
+        when_true,
+        when_false,
+        condition,
+    );
+    // fix this
+    let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+    Ok(AssignedBase { scalar, limbs })
+    }
+
+    // todo go through  halo2-ecc/src/bigint/add_no_carry.rs and /bigint/mod.rs 
+    // fn add_base(
+    //     &self,
+    //     _: &mut impl Layouter<C::Scalar>,
+    //     ctx: &mut Context<F>,
+    //     lhs: &Self::AssignedBase,
+    //     rhs: &Self::AssignedBase,
+    // ) -> Result<Self::AssignedBase, Error> {
+    //     let collector = &mut self.collector.borrow_mut();
+    //     let mut integer_chip = IntegerChip::new(collector, &self.rns);
+    //     let scalar = integer_chip.add(&lhs.scalar, &rhs.scalar);
+    //     let scalar = integer_chip.reduce(&scalar);
+    //     let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+    //     Ok(AssignedBase { scalar, limbs })
+    // }
+
+    fn add_base(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        gate: &impl GateInstructions<F>,
+        ctx: &mut Context<F>,
+        lhs: &Self::AssignedBase,
+        rhs: &Self::AssignedBase,
+    ) -> Result<Self::AssignedBase, Error> {
+        let (scalar,_) = add_no_carry::crt(
+            gate,
+            ctx,
+            a,
+            b,
+        );
+        // fix this
+        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        Ok(AssignedBase { scalar, limbs })
+    }
+
+    // do sub with carry or not?
+    fn sub_base(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        gate: &impl GateInstructions<F>,
+        ctx: &mut Context<F>,
+        lhs: &Self::AssignedBase,
+        rhs: &Self::AssignedBase,
+    ) -> Result<Self::AssignedBase, Error> {
+        let (scalar,_) = sub_no_carry::crt(
+            gate,
+            ctx,
+            a,
+            b,
+        );
+        // fix this
+        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        Ok(AssignedBase { scalar, limbs })
+    }
+
+    fn mul_base(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
+        gate: &impl GateInstructions<F>,
+        ctx: &mut Context<F>,
+        lhs: &Self::AssignedBase,
+        rhs: &Self::AssignedBase,
+    ) -> Result<Self::AssignedBase, Error> {
+        let (scalar,_) = mul_no_carry::crt(
+            gate,
+            ctx,
+            a,
+            b,
+            NUM_LIMBS_LOG2_CEIL,
+        );
+        // fix this
+        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        Ok(AssignedBase { scalar, limbs })
+    }
+
+    // div not implemented in axiom's lib
+    fn div_incomplete_base(
+        &self,
+        _: &mut impl Layouter<C::Scalar>,
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
     ) -> Result<Self::AssignedBase, Error> {
         let collector = &mut self.collector.borrow_mut();
         let mut integer_chip = IntegerChip::new(collector, &self.rns);
-        let scalar = integer_chip.add(&lhs.scalar, &rhs.scalar);
-        let scalar = integer_chip.reduce(&scalar);
+        let scalar = integer_chip.div_incomplete(&lhs.scalar, &rhs.scalar);
         let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
         Ok(AssignedBase { scalar, limbs })
     }
-
-
 
 
 
