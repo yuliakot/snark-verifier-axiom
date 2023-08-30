@@ -23,7 +23,7 @@ use common::*;
 use halo2_base::{gates::flex_gate::GateStrategy, AssignedValue};
 use halo2_base::utils::fs::gen_srs;
 use halo2_base::{gates::{builder::FlexGateConfigParams, RangeChip, RangeInstructions}, 
-    halo2_proofs,
+    halo2_proofs::{circuit::Value, plonk::Assigned},
     QuantumCell::{Constant, Existing},
 };
 use halo2_proofs::{
@@ -540,7 +540,6 @@ pub struct AssignedBase<F: ScalarField> {
 // todo figure out Layouter<C::Scalar> needed?
 impl<F: ScalarField> GateChip<C> for Chip<C> {
 
-
     fn constrain_equal(
         &self,
         _: &mut impl Layouter<C::Scalar>,
@@ -579,9 +578,16 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
         Ok(ctx.load_witness(witness))
     }
 
-    // fn assert_if_known(&self, value: &Self::Assigned, f: impl FnOnce(&C::Scalar) -> bool) {
-    //     value.value().assert_if_known(f)
-    // }
+    // imported from halo2_proofs
+    fn assert_if_known(&self, 
+        ctx: &mut Context<F>,
+        value: AssignedValue<F>, 
+        f: impl FnOnce(&C::Scalar) -> bool) {
+            //if !ctx.witness_gen_only {
+                ctx.advice_equality_constraints.push((value.value(), f));
+    }
+    
+    fn assert_is_const(&self, ctx: &mut Context<F>, a: &AssignedValue<F>, constant: &F)
 
     fn select(
         &self,
@@ -729,7 +735,7 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
         condition: Assigned<F>,
         when_true: &Self::AssignedBase,
         when_false: &Self::AssignedBase,
-    ) -> Result<&Self::AssignedBase, Error> {
+    ) -> Result<Self::AssignedBase, Error> {
         let (scalar) = select::crt(
         gate,
         ctx,
