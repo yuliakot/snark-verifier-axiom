@@ -1,10 +1,9 @@
 use crate::{
     poly::Polynomial,
     util::{
-        arithmetic::{div_ceil, usize_from_bits_le, BooleanHypercube, Field},
-        expression::Rotation,
+        arithmetic::{div_ceil, usize_from_bits_le, BooleanHypercube, Field, Rotation},
         impl_index,
-        parallel::{num_threads, parallelize, parallelize_iter},
+        num_threads, parallelize, parallelize_iter,
         BitIndex, Deserialize, Itertools, Serialize,
     },
 };

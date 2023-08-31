@@ -20,6 +20,7 @@ use std::{
     iter, mem,
     ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
+use num_integer::Integer;
 
 /// [`halo2_curves::pairing::MultiMillerLoop`] with [`std::fmt::Debug`].
 pub trait MultiMillerLoop: halo2_curves::pairing::MultiMillerLoop + Debug {}
@@ -299,7 +300,6 @@ pub fn inner_product<F: Field>(lhs: &[F], rhs: &[F]) -> F {
 }
 
 use crate::util::par_map_collect;
-use std::{cmp::Ordering, iter};
 
 /// Integer representation of primitive polynomial in GF(2).
 const PRIMITIVES: [usize; 32] = [
@@ -479,4 +479,25 @@ mod test {
             }
         }
     }
+}
+
+pub fn usize_from_bits_le(bits: &[bool]) -> usize {
+    bits.iter()
+        .rev()
+        .fold(0, |int, bit| (int << 1) + (*bit as usize))
+}
+
+pub fn div_rem(dividend: usize, divisor: usize) -> (usize, usize) {
+    Integer::div_rem(&dividend, &divisor)
+}
+
+pub fn div_ceil(dividend: usize, divisor: usize) -> usize {
+    Integer::div_ceil(&dividend, &divisor)
+}
+
+pub fn horner<F: Field>(coeffs: &[F], x: &F) -> F {
+    coeffs
+        .iter()
+        .rev()
+        .fold(F::ZERO, |acc, coeff| acc * x + coeff)
 }

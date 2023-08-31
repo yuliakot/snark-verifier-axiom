@@ -181,6 +181,7 @@ mod halo2 {
 pub enum CommonPolynomial {
     Identity,
     Lagrange(i32),
+    EqXY(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -225,7 +226,7 @@ where
             .iter()
             .map(|omega| Fraction::new(numer.clone() * omega, z.clone() - omega))
             .collect_vec();
-
+        
         Self {
             zn,
             zn_minus_one,
@@ -251,6 +252,8 @@ where
         match poly {
             CommonPolynomial::Identity => &self.identity,
             CommonPolynomial::Lagrange(i) => self.lagrange.get(&i).unwrap().evaluated(),
+            // todo fix eqxy
+            CommonPolynomial::EqXY(idx) => self.lagrange.get(&idx).unwrap().evaluated(),
         }
     }
 

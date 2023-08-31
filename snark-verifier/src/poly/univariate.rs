@@ -3,7 +3,7 @@ use crate::{
     util::{
         arithmetic::{div_ceil, horner, powers, Field},
         impl_index,
-        parallel::{num_threads, parallelize, parallelize_iter},
+        num_threads, parallelize, parallelize_iter,
         Deserialize, Itertools, Serialize,
     },
 };

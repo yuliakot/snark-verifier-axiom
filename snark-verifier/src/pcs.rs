@@ -40,6 +40,32 @@ impl<F: PrimeField> Query<F> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Evaluation<F> {
+    poly: usize,
+    point: usize,
+    value: F,
+}
+
+impl<F> Evaluation<F> {
+    pub fn new(poly: usize, point: usize, value: F) -> Self {
+        Self { poly, point, value }
+    }
+
+    pub fn poly(&self) -> usize {
+        self.poly
+    }
+
+    pub fn point(&self) -> usize {
+        self.point
+    }
+
+    pub fn value(&self) -> &F {
+        &self.value
+    }
+}
+
+
 /// todo add batch open, batch verify
 /// Polynomial commitment scheme verifier.
 pub trait PolynomialCommitmentScheme<C, L>: Clone + Debug
