@@ -48,3 +48,25 @@ where
     #[cfg(not(feature = "parallel"))]
     f((v, 0));
 }
+
+#[cfg(feature = "parallel")]
+pub fn par_map_collect<T, R, C>(
+    v: impl rayon::prelude::IntoParallelIterator<Item = T>,
+    f: impl Fn(T) -> R + Send + Sync,
+) -> C
+where
+    T: Send + Sync,
+    R: Send,
+    C: rayon::prelude::FromParallelIterator<R>,
+{
+    use rayon::prelude::ParallelIterator;
+    v.into_par_iter().map(f).collect()
+}
+
+#[cfg(not(feature = "parallel"))]
+pub fn par_map_collect<T, R, C>(v: impl IntoIterator<Item = T>, f: impl Fn(T) -> R) -> C
+where
+    C: FromIterator<R>,
+{
+    v.into_iter().map(f).collect()
+}

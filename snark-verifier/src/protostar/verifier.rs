@@ -3,32 +3,28 @@ use crate::{
     loader::evm::{self, encode_calldata, Address, EvmLoader, ExecutorBuilder},
     pcs::kzg::{Gwc19, KzgAs},
     verifier::{self, SnarkVerifier},
-    pcs::{
-        multilinear::{
-            Gemini, MultilinearHyrax, MultilinearHyraxParams, MultilinearIpa, MultilinearIpaParams,
-        },
-        univariate::{kzg::eval_sets, UnivariateKzg},
-        AdditiveCommitment, Evaluation, PolynomialCommitmentScheme,
-    },
+    // pcs::{
+    //     multilinear::{
+    //         Gemini, MultilinearHyrax, MultilinearHyraxParams, MultilinearIpa, MultilinearIpaParams,
+    //     },
+    //     Evaluation,
+    // },
     poly::multilinear::{
         rotation_eval_coeff_pattern, rotation_eval_point_pattern, zip_self, MultilinearPolynomial,
     },
     util::{
         arithmetic::{
-            barycentric_weights, fe_to_fe, fe_truncated_from_le_bytes, powers, steps,
-            BooleanHypercube, Field, MultiMillerLoop, PrimeCurveAffine, PrimeField, TwoChainCurve,
+            fe_to_fe, fe_truncated_from_le_bytes, powers, Rotation, 
+            BooleanHypercube, Field, MultiMillerLoop, PrimeCurveAffine, PrimeField,
         },
         chain, end_timer,
-        expression::{CommonPolynomial, Expression, Query, Rotation},
+        expression::{CommonPolynomial, Expression, Query},
         hash::{Hash as _, Keccak256},
         izip, izip_eq, start_timer,
+        //figure out compat and inmemory transcript 
+        transcript::{InMemoryTranscript, TranscriptRead, TranscriptWrite},
         BitIndex, DeserializeOwned, Itertools, Serialize,
     },
-    protostar::strawman_halo2_lib
-};
-use halo2_proofs::{
-    circuit::{AssignedCell,  Value},
-    plonk::{Circuit, ConstraintSystem, Error},
 };
 use rand::RngCore;
 use std::{
@@ -36,25 +32,60 @@ use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     fmt::Debug,
     hash::Hash,
-    iter::{self},
+    iter,
     marker::PhantomData,
 };
-use halo2_base::{gates::flex_gate::{GateChip, GateInstructions}, utils::ScalarField, AssignedValue, Context};
+use halo2_base::{halo2_proofs,gates::flex_gate::{GateChip, GateInstructions}, utils::ScalarField, AssignedValue, Context, QuantumCell::{self, Constant, Existing, Witness, WitnessFraction},
+};
+use halo2_proofs::plonk::{
+    create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Assigned, Circuit, Column,
+    ConstraintSystem, Error, Fixed, Instance, ProvingKey, VerifyingKey,
+};
 
-impl <F: ScalarField> Chip<F> {
-    
+pub struct Chip<F> {
+    pub gate: GateChip<F>,
+}
+
+impl <F: ScalarField> Chip<F>{
+
+    fn powers(
+        &self,
+        ctx: &mut Context<F>,
+        x: &AssignedValue<F>,
+        n: usize,
+    ) -> Result<Vec<AssignedValue<F>>, Error> {
+        Ok(match n {
+            0 => Vec::new(),
+            1 => vec![ctx.load_constant(F::one())?],
+            2 => vec![
+                ctx.load_constant(F::one())?,
+                x.clone(),
+            ],
+            _ => {
+                let mut powers = Vec::with_capacity(n);
+                powers.push(ctx.load_constant(F::one())?);
+                powers.push(x.clone());
+                for _ in 0..n - 2 {
+                    powers.push(self.gate.mul(ctx,Witness(powers.last().unwrap()), x)?);
+                }
+                powers
+            }
+        });
+    }
+
     fn hornor(
         &self,
+        ctx: &mut Context<F>,
         coeffs: &[AssignedValue<F>],
         x: &AssignedValue<F>,
     ) -> Result<AssignedValue<F>, Error> {
-        let gate: GateChip<F> = GateChip::default();
-        let powers_of_x = self.powers(x, coeffs.len())?;
-        Ok(gate.inner_product(ctx, coeffs, &powers_of_x))
+        let powers_of_n = self.powers(ctx, x, coeffs.len())?;
+        Ok(self.gate.inner_product(ctx, coeffs, powers_of_x))
     }
 
-    fn rotation_eval_points(
+    fn rotation_eval_points( 
         &self,
+        ctx: &mut Context<F>,
         x: &[AssignedValue<F>],
         one_minus_x: &[AssignedValue<F>],
         rotation: Rotation,
@@ -63,8 +94,8 @@ impl <F: ScalarField> Chip<F> {
             return Ok(vec![x.to_vec()]);
         }
 
-        let zero = ctx.load_constant( F::ZERO)?;
-        let one = ctx.load_constant( F::ONE)?;
+        let zero = ctx.load_constant(F::ZERO)?;
+        let one = ctx.load_constant(F::ONE)?;
         let distance = rotation.distance();
         let num_x = x.len() - distance;
         let points = if rotation < Rotation::cur() {
@@ -83,12 +114,14 @@ impl <F: ScalarField> Chip<F> {
                             }
                         }))
                         .chain((0..distance).map(|idx| {
+                            // fix nth_bit
                             if pat.nth_bit(idx + num_x) {
                                 &one
                             } else {
                                 &zero
                             }
                         }))
+                        // fix cloned(), cloned_vec
                         .cloned()
                         .collect_vec()
                 })
@@ -120,6 +153,7 @@ impl <F: ScalarField> Chip<F> {
 
     fn rotation_eval(
         &self,
+        ctx: &mut Context<F>,
         x: &[AssignedValue<F>],
         rotation: Rotation,
         evals_for_rotation: &[AssignedValue<F>],
@@ -163,9 +197,9 @@ impl <F: ScalarField> Chip<F> {
                                 if bit {
                                     std::mem::swap(&mut eval_0, &mut eval_1);
                                 }
-                                let diff = self.sub( eval_1, eval_0)?;
-                                let diff_x_i = self.mul( &diff, x_i)?;
-                                self.add( &diff_x_i, eval_0)
+                                let diff = self.gate.sub(ctx, eval_1, eval_0)?;
+                                let diff_x_i = self.gate.mul(ctx, &diff, x_i)?;
+                                self.gate.add(ctx, &diff_x_i, eval_0)
                             })
                             .try_collect::<_, Vec<_>, _>()
                             .map(Into::into)
@@ -177,16 +211,17 @@ impl <F: ScalarField> Chip<F> {
 
     fn eq_xy_coeffs(
         &self,
+        ctx: &mut Context<F>,
         y: &[AssignedValue<F>],
     ) -> Result<Vec<AssignedValue<F>>, Error> {
-        let mut evals = vec![ctx.load_constant( C::Base::ONE)?];
+        let mut evals = vec![ctx.load_constant(F::one())?];
 
         for y_i in y.iter().rev() {
             evals = evals
                 .iter()
                 .map(|eval| {
-                    let hi = self.mul( eval, y_i)?;
-                    let lo = self.sub( eval, &hi)?;
+                    let hi = self.gate.mul(ctx, eval, y_i)?;
+                    let lo = self.gate.sub(ctx, eval, &hi)?;
                     Ok([lo, hi])
                 })
                 .try_collect::<_, Vec<_>, Error>()?
@@ -200,17 +235,18 @@ impl <F: ScalarField> Chip<F> {
 
     fn eq_xy_eval(
         &self,
+        ctx: &mut Context<F>,
         x: &[AssignedValue<F>],
         y: &[AssignedValue<F>],
     ) -> Result<AssignedValue<F>, Error> {
         let terms = izip_eq!(x, y)
             .map(|(x, y)| {
-                let one = ctx.load_constant( C::Base::ONE)?;
-                let xy = self.mul( x, y)?;
-                let two_xy = self.add( &xy, &xy)?;
-                let two_xy_plus_one = self.add( &two_xy, &one)?;
-                let x_plus_y = self.add( x, y)?;
-                self.sub( &two_xy_plus_one, &x_plus_y)
+                let one = ctx.load_constant( F::one())?;
+                let xy = self.gate.mul(ctx, x, y)?;
+                let two_xy = self.gate.add(ctx, &xy, &xy)?;
+                let two_xy_plus_one = self.gate.add(ctx, &two_xy, &one)?;
+                let x_plus_y = self.gate.add(ctx, x, y)?;
+                self.gate.sub(ctx, &two_xy_plus_one, &x_plus_y)
             })
             .try_collect::<_, Vec<_>, _>()?;
         self.product( &terms)
@@ -276,7 +312,7 @@ impl <F: ScalarField> Chip<F> {
                 let scalar = evaluate(scalar)?;
                 let exprs = exprs.iter().map(evaluate).try_collect::<_, Vec<_>, _>()?;
                 let mut scalars = Vec::with_capacity(exprs.len());
-                scalars.push(ctx.load_constant( C::Base::ONE)?);
+                scalars.push(ctx.load_constant( F::one())?);
                 scalars.push(scalar);
                 for _ in 2..exprs.len() {
                     scalars.push(self.mul( &scalars[1], scalars.last().unwrap())?);
@@ -294,33 +330,37 @@ impl <F: ScalarField> Chip<F> {
         sum: &AssignedValue<F>,
         transcript: &mut impl TranscriptInstruction<C, TccChip = Self>,
     ) -> Result<(AssignedValue<F>, Vec<AssignedValue<F>>), Error> {
-        let gate: GateChip<F> = GateChip::default();
         let p = F::zero();
-        let points = ctx.assign_witnesses(iter::repeat(F::zero()).take(degree + 1).collect_vec());
+        let points = ctx.assign_witnesses(iter::successors(Some(p), move |state| Some(F::one() + state)).collect_vec());
 
         let mut sum = Cow::Borrowed(sum);
         let mut x = Vec::with_capacity(num_vars);
         
         for _ in 0..num_vars {
             let msg = transcript.read_field_elements( degree + 1)?;
-            x.push(transcript.squeeze_challenge(layouter)?.as_ref().clone());
+            x.push(transcript.squeeze_challenge()?.as_ref().clone());
 
             let sum_from_evals = if IS_MSG_EVALS {
-                gate.add(ctx, &msg[0], &msg[1])?
+                self.gate.add(ctx, &msg[0], &msg[1])?
             } else {
-                gate.sum(ctx, chain![[&msg[0], &msg[0]], &msg[1..]])?
+                self.gate.sum(ctx, chain![[&msg[0], &msg[0]], &msg[1..]])?
             };
-            gate.constrain_equal( &sum, &sum_from_evals)?;
-            let coords = 
+            self.gate.constrain_equal( &sum, &sum_from_evals)?;
+
+            let coords = points
+            .iter()
+            .cloned()
+            .zip(msg.iter().cloned())
+            .collect();
 
             if IS_MSG_EVALS {
-                sum = Cow::Owned(gate.lagrange_and_eval(
+                sum = Cow::Owned(self.gate.lagrange_and_eval(
                     ctx,
-                    (&points,&msg),
+                    &coords,
                     x.last().unwrap(),
                 )?);
             } else {
-                sum = Cow::Owned(self.hornor( &msg, x.last().unwrap())?);
+                sum = Cow::Owned(self.hornor(ctx, &msg, x.last().unwrap())?);
             };
         }
 
@@ -331,6 +371,7 @@ impl <F: ScalarField> Chip<F> {
     #[allow(clippy::type_complexity)]
     fn verify_sum_check_and_query(
         &self,
+        ctx: &mut Context<F>,
         num_vars: usize,
         expression: &Expression<C::Base>,
         sum: &AssignedValue<F>,
@@ -348,7 +389,7 @@ impl <F: ScalarField> Chip<F> {
         let degree = expression.degree();
 
         let (x_eval, x) =
-            self.verify_sum_check::<true>( num_vars, degree, sum, transcript)?;
+            self.verify_sum_check::<true>( ctx, num_vars, degree, sum, transcript)?;
 
         let pcs_query = {
             let mut used_query = expression.used_query();
@@ -361,7 +402,7 @@ impl <F: ScalarField> Chip<F> {
                 let evals_for_rotation =
                     transcript.read_field_elements( 1 << query.rotation().distance())?;
                 let eval = self.rotation_eval(
-                    
+                    ctx,
                     x.as_ref(),
                     query.rotation(),
                     &evals_for_rotation,
@@ -372,7 +413,7 @@ impl <F: ScalarField> Chip<F> {
             .into_iter()
             .unzip::<_, _, Vec<_>, Vec<_>>();
 
-        let one = ctx.load_constant( C::Base::ONE)?;
+        let one = ctx.load_constant(F::one())?;
         let one_minus_x = x
             .iter()
             .map(|x_i| self.sub( &one, x_i))
@@ -443,7 +484,7 @@ impl <F: ScalarField> Chip<F> {
             )
         };
         let identity_eval = {
-            let powers_of_two = powers(C::Base::ONE.double())
+            let powers_of_two = powers(F::one().double())
                 .take(x.len())
                 .map(|power_of_two| ctx.load_constant( power_of_two))
                 .try_collect::<_, Vec<_>, Error>()?;
@@ -468,7 +509,7 @@ impl <F: ScalarField> Chip<F> {
             .map(Query::rotation)
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .map(|rotation| self.rotation_eval_points( &x, &one_minus_x, rotation))
+            .map(|rotation| self.rotation_eval_points(ctx, &x, &one_minus_x, rotation))
             .try_collect::<_, Vec<_>, _>()?
             .into_iter()
             .flatten()
@@ -490,6 +531,7 @@ impl <F: ScalarField> Chip<F> {
     #[allow(clippy::type_complexity)]
     fn multilinear_pcs_batch_verify<'a, Comm>(
         &self,
+        ctx: &mut Context<F>,
         comms: &'a [Comm],
         points: &[Vec<AssignedValue<F>>],
         evals: &[Evaluation<AssignedValue<F>>],
@@ -512,17 +554,17 @@ impl <F: ScalarField> Chip<F> {
             .cloned()
             .collect_vec();
 
-        let eq_xt = self.eq_xy_coeffs( &t)?;
-        let tilde_gs_sum = self.inner_product(
-            
+        let eq_xt = self.eq_xy_coeffs(ctx, &t)?;
+        let tilde_gs_sum = self.gate.inner_product(
+            ctx,
             &eq_xt[..evals.len()],
             evals.iter().map(Evaluation::value),
         )?;
         let (g_prime_eval, x) =
-            self.verify_sum_check::<false>( num_vars, 2, &tilde_gs_sum, transcript)?;
+            self.verify_sum_check::<false>(ctx, num_vars, 2, &tilde_gs_sum, transcript)?;
         let eq_xy_evals = points
             .iter()
-            .map(|point| self.eq_xy_eval( &x, point))
+            .map(|point| self.eq_xy_eval(ctx, &x, point))
             .try_collect::<_, Vec<_>, _>()?;
 
         let g_prime_comm = {
@@ -530,10 +572,10 @@ impl <F: ScalarField> Chip<F> {
                 Ok::<_, Error>(BTreeMap::<_, _>::new()),
                 |scalars, (eval, eq_xt_i)| {
                     let mut scalars = scalars?;
-                    let scalar = self.mul( &eq_xy_evals[eval.point()], eq_xt_i)?;
+                    let scalar = self.gate.mul(ctx, &eq_xy_evals[eval.point()], eq_xt_i)?;
                     match scalars.entry(eval.poly()) {
                         Entry::Occupied(mut entry) => {
-                            *entry.get_mut() = self.add( entry.get(), &scalar)?;
+                            *entry.get_mut() = self.gate.add(ctx, entry.get(), &scalar)?;
                         }
                         Entry::Vacant(entry) => {
                             entry.insert(scalar);
@@ -563,21 +605,21 @@ impl <F: ScalarField> Chip<F> {
         Self::AssignedSecondary: 'a,
         AssignedValue<F>: 'a,
     {
-        let xi_0 = transcript.squeeze_challenge(layouter)?.as_ref().clone();
+        let xi_0 = transcript.squeeze_challenge()?.as_ref().clone();
 
         let (ls, rs, xis) = iter::repeat_with(|| {
             Ok::<_, Error>((
-                transcript.read_commitment(layouter)?,
-                transcript.read_commitment(layouter)?,
-                transcript.squeeze_challenge(layouter)?.as_ref().clone(),
+                transcript.read_commitment()?,
+                transcript.read_commitment()?,
+                transcript.squeeze_challenge()?.as_ref().clone(),
             ))
         })
         .take(point.len())
         .try_collect::<_, Vec<_>, _>()?
         .into_iter()
         .multiunzip::<(Vec<_>, Vec<_>, Vec<_>)>();
-        let g_k = transcript.read_commitment(layouter)?;
-        let c = transcript.read_field_element(layouter)?;
+        let g_k = transcript.read_commitment()?;
+        let c = transcript.read_field_element()?;
 
         let xi_invs = xis
             .iter()
@@ -586,7 +628,7 @@ impl <F: ScalarField> Chip<F> {
         let eval_prime = self.mul( &xi_0, eval)?;
 
         let h_eval = {
-            let one = ctx.load_constant( C::Base::ONE)?;
+            let one = ctx.load_constant( F::one())?;
             let terms = izip_eq!(point, xis.iter().rev())
                 .map(|(point, xi)| {
                     let point_xi = self.mul( point, xi)?;
@@ -597,7 +639,7 @@ impl <F: ScalarField> Chip<F> {
             self.product( &terms)?
         };
         let h_coeffs = {
-            let one = ctx.load_constant( C::Base::ONE)?;
+            let one = ctx.load_constant( F::one())?;
             let mut coeff = vec![one];
 
             for xi in xis.iter().rev() {
@@ -704,21 +746,21 @@ impl <F: ScalarField> Chip<F> {
             );
         }
 
-        let beta = transcript.squeeze_challenge(layouter)?.as_ref().clone();
+        let beta = transcript.squeeze_challenge()?.as_ref().clone();
 
         let lookup_m_comms =
             iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
                 .take(vp.num_lookups)
                 .try_collect::<_, Vec<_>, _>()?;
 
-        let gamma = transcript.squeeze_challenge(layouter)?.as_ref().clone();
+        let gamma = transcript.squeeze_challenge()?.as_ref().clone();
 
         let lookup_h_permutation_z_comms =
             iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
                 .take(vp.num_lookups + vp.num_permutation_z_polys)
                 .try_collect::<_, Vec<_>, _>()?;
 
-        let alpha = transcript.squeeze_challenge(layouter)?.as_ref().clone();
+        let alpha = transcript.squeeze_challenge()?.as_ref().clone();
         let y = transcript
             .squeeze_challenges( vp.num_vars)?
             .iter()
@@ -730,7 +772,7 @@ impl <F: ScalarField> Chip<F> {
 
         let zero = ctx.load_constant( C::Base::ZERO)?;
         let (points, evals) = self.verify_sum_check_and_query(
-            
+            ctx,
             vp.num_vars,
             &vp.expression,
             &zero,

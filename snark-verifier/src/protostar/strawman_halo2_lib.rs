@@ -586,8 +586,8 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
             //if !ctx.witness_gen_only {
                 ctx.advice_equality_constraints.push((value.value(), f));
     }
-    
-    fn assert_is_const(&self, ctx: &mut Context<F>, a: &AssignedValue<F>, constant: &F)
+
+    fn assert_is_const(&self, ctx: &mut Context<F>, a: &AssignedValue<F>, constant: &F);
 
     fn select(
         &self,

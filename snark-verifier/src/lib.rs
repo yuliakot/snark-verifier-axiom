@@ -6,6 +6,7 @@
 pub mod cost;
 pub mod loader;
 pub mod pcs;
+pub mod poly;
 pub mod system;
 pub mod util;
 pub mod verifier;

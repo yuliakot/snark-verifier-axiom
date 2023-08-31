@@ -9,7 +9,7 @@ We only need to write the final IVC verifier circuit which runs the nark verfier
 Do we use cycles of curves for snark verifier? 
 Yi - yes the nark verifier circuit needs to work on the cycles of curve 
 
-### 2 Hyperplonk backend fix -- Amit 
+### 2 Hyperplonk backend fix 
 
 1. reduce_decider_inner --> verify_sum_check_and_query --> point_offset from the Hyperplonk backend. -- implement point offset in halo2
 2. Hyperplonk used in verify decider
@@ -20,5 +20,5 @@ figure out why verify_ipa_grumpkin_ivc_with_last_nark --> reduce_decider_with_la
 whats aggregator1 doing? maybe runs decider_inner 
 agg2 should run acc verifier on C2
 
-### TODO -- Yulia/Jern
-1. Convert strawman file to use modules from halo2-lib/ecc -- recommended by Han 
+### TODO 
+1. Figure out transcript in halo2-lib for the sum_check -- https://github.com/amit0365/snark-verifier-axiom/blob/ae393a3a665bca31b52600741f2d3f52c3334b16/snark-verifier/src/protostar/verifier.rs#L289
