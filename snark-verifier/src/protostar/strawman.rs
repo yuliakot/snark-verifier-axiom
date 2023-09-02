@@ -104,6 +104,335 @@ mod strawman {
         Spec::new(R_F, R_P)
     }
 
+    pub trait TwoChainCurveInstruction<C: TwoChainCurve>: Clone + Debug {
+        type Config: Clone + Debug;
+        type Assigned: Clone + Debug;
+        type AssignedBase: Clone + Debug;
+        type AssignedPrimary: Clone + Debug;
+        type AssignedSecondary: Clone + Debug;
+    
+        fn new(config: Self::Config) -> Self;
+    
+        fn to_assigned(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            assigned: &AssignedCell<C::Scalar, C::Scalar>,
+        ) -> Result<Self::Assigned, Error>;
+    
+        fn constrain_instance(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            value: &Self::Assigned,
+            row: usize,
+        ) -> Result<(), Error>;
+    
+        fn constrain_equal(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::Assigned,
+            rhs: &Self::Assigned,
+        ) -> Result<(), Error>;
+    
+        fn assign_constant(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            constant: C::Scalar,
+        ) -> Result<Self::Assigned, Error>;
+    
+        fn assign_witness(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            witness: Value<C::Scalar>,
+        ) -> Result<Self::Assigned, Error>;
+    
+        fn assert_if_known(&self, value: &Self::Assigned, f: impl FnOnce(&C::Scalar) -> bool);
+    
+        fn select(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            condition: &Self::Assigned,
+            when_true: &Self::Assigned,
+            when_false: &Self::Assigned,
+        ) -> Result<Self::Assigned, Error>;
+    
+        fn is_equal(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::Assigned,
+            rhs: &Self::Assigned,
+        ) -> Result<Self::Assigned, Error>;
+    
+        fn add(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::Assigned,
+            rhs: &Self::Assigned,
+        ) -> Result<Self::Assigned, Error>;
+    
+        fn sub(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::Assigned,
+            rhs: &Self::Assigned,
+        ) -> Result<Self::Assigned, Error>;
+    
+        fn mul(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::Assigned,
+            rhs: &Self::Assigned,
+        ) -> Result<Self::Assigned, Error>;
+    
+        fn constrain_equal_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedBase,
+            rhs: &Self::AssignedBase,
+        ) -> Result<(), Error>;
+    
+        fn assign_constant_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            constant: C::Base,
+        ) -> Result<Self::AssignedBase, Error>;
+    
+        fn assign_witness_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            witness: Value<C::Base>,
+        ) -> Result<Self::AssignedBase, Error>;
+    
+        fn assert_if_known_base(&self, value: &Self::AssignedBase, f: impl FnOnce(&C::Base) -> bool);
+    
+        fn select_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            condition: &Self::Assigned,
+            when_true: &Self::AssignedBase,
+            when_false: &Self::AssignedBase,
+        ) -> Result<Self::AssignedBase, Error>;
+    
+        fn fit_base_in_scalar(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            value: &Self::AssignedBase,
+        ) -> Result<Self::Assigned, Error>;
+    
+        fn to_repr_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            value: &Self::AssignedBase,
+        ) -> Result<Vec<Self::Assigned>, Error>;
+    
+        fn add_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedBase,
+            rhs: &Self::AssignedBase,
+        ) -> Result<Self::AssignedBase, Error>;
+    
+        fn sub_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedBase,
+            rhs: &Self::AssignedBase,
+        ) -> Result<Self::AssignedBase, Error>;
+    
+        fn neg_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            value: &Self::AssignedBase,
+        ) -> Result<Self::AssignedBase, Error> {
+            let zero = self.assign_constant_base(layouter, C::Base::ZERO)?;
+            self.sub_base(layouter, &zero, value)
+        }
+    
+        fn sum_base<'a>(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            values: impl IntoIterator<Item = &'a Self::AssignedBase>,
+        ) -> Result<Self::AssignedBase, Error>
+        where
+            Self::AssignedBase: 'a,
+        {
+            values.into_iter().fold(
+                self.assign_constant_base(layouter, C::Base::ZERO),
+                |acc, value| self.add_base(layouter, &acc?, value),
+            )
+        }
+    
+        fn product_base<'a>(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            values: impl IntoIterator<Item = &'a Self::AssignedBase>,
+        ) -> Result<Self::AssignedBase, Error>
+        where
+            Self::AssignedBase: 'a,
+        {
+            values.into_iter().fold(
+                self.assign_constant_base(layouter, C::Base::ONE),
+                |acc, value| self.mul_base(layouter, &acc?, value),
+            )
+        }
+    
+        fn mul_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedBase,
+            rhs: &Self::AssignedBase,
+        ) -> Result<Self::AssignedBase, Error>;
+    
+        fn div_incomplete_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedBase,
+            rhs: &Self::AssignedBase,
+        ) -> Result<Self::AssignedBase, Error>;
+    
+        fn invert_incomplete_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            value: &Self::AssignedBase,
+        ) -> Result<Self::AssignedBase, Error> {
+            let one = self.assign_constant_base(layouter, C::Base::ONE)?;
+            self.div_incomplete_base(layouter, &one, value)
+        }
+    
+        fn powers_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            base: &Self::AssignedBase,
+            n: usize,
+        ) -> Result<Vec<Self::AssignedBase>, Error> {
+            Ok(match n {
+                0 => Vec::new(),
+                1 => vec![self.assign_constant_base(layouter, C::Base::ONE)?],
+                2 => vec![
+                    self.assign_constant_base(layouter, C::Base::ONE)?,
+                    base.clone(),
+                ],
+                _ => {
+                    let mut powers = Vec::with_capacity(n);
+                    powers.push(self.assign_constant_base(layouter, C::Base::ONE)?);
+                    powers.push(base.clone());
+                    for _ in 0..n - 2 {
+                        powers.push(self.mul_base(layouter, powers.last().unwrap(), base)?);
+                    }
+                    powers
+                }
+            })
+        }
+    
+        fn squares_base(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            base: &Self::AssignedBase,
+            n: usize,
+        ) -> Result<Vec<Self::AssignedBase>, Error> {
+            Ok(match n {
+                0 => Vec::new(),
+                1 => vec![base.clone()],
+                _ => {
+                    let mut squares = Vec::with_capacity(n);
+                    squares.push(base.clone());
+                    for _ in 0..n - 1 {
+                        squares.push(self.mul_base(
+                            layouter,
+                            squares.last().unwrap(),
+                            squares.last().unwrap(),
+                        )?);
+                    }
+                    squares
+                }
+            })
+        }
+    
+        fn inner_product_base<'a, 'b>(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: impl IntoIterator<Item = &'a Self::AssignedBase>,
+            rhs: impl IntoIterator<Item = &'b Self::AssignedBase>,
+        ) -> Result<Self::AssignedBase, Error>
+        where
+            Self::AssignedBase: 'a + 'b,
+        {
+            let products = izip_eq!(lhs, rhs)
+                .map(|(lhs, rhs)| self.mul_base(layouter, lhs, rhs))
+                .collect_vec();
+            products
+                .into_iter()
+                .reduce(|acc, output| self.add_base(layouter, &acc?, &output?))
+                .unwrap()
+        }
+    
+        fn constrain_equal_secondary(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedSecondary,
+            rhs: &Self::AssignedSecondary,
+        ) -> Result<(), Error>;
+    
+        fn assign_constant_secondary(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            constant: C::Secondary,
+        ) -> Result<Self::AssignedSecondary, Error>;
+    
+        fn assign_witness_secondary(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            witness: Value<C::Secondary>,
+        ) -> Result<Self::AssignedSecondary, Error>;
+    
+        fn assert_if_known_secondary(
+            &self,
+            value: &Self::AssignedSecondary,
+            f: impl FnOnce(&C::Secondary) -> bool,
+        );
+    
+        fn select_secondary(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            condition: &Self::Assigned,
+            when_true: &Self::AssignedSecondary,
+            when_false: &Self::AssignedSecondary,
+        ) -> Result<Self::AssignedSecondary, Error>;
+    
+        fn add_secondary(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            lhs: &Self::AssignedSecondary,
+            rhs: &Self::AssignedSecondary,
+        ) -> Result<Self::AssignedSecondary, Error>;
+    
+        fn scalar_mul_secondary(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            base: &Self::AssignedSecondary,
+            scalar_le_bits: &[Self::Assigned],
+        ) -> Result<Self::AssignedSecondary, Error>;
+    
+        fn fixed_base_msm_secondary<'a, 'b>(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            bases: impl IntoIterator<Item = &'a C::Secondary>,
+            scalars: impl IntoIterator<Item = &'b Self::AssignedBase>,
+        ) -> Result<Self::AssignedSecondary, Error>
+        where
+            Self::AssignedBase: 'b;
+    
+        fn variable_base_msm_secondary<'a, 'b>(
+            &self,
+            layouter: &mut impl Layouter<C::Scalar>,
+            bases: impl IntoIterator<Item = &'a Self::AssignedSecondary>,
+            scalars: impl IntoIterator<Item = &'b Self::AssignedBase>,
+        ) -> Result<Self::AssignedSecondary, Error>
+        where
+            Self::AssignedSecondary: 'a,
+            Self::AssignedBase: 'b;
+    }
+
+    
     #[derive(Debug)]
     pub struct PoseidonTranscript<F: PrimeField, S> {
         state: Poseidon<F, T, RATE>,

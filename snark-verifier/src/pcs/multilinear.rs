@@ -4,12 +4,10 @@ use crate::{
     Error,
 };
 
-mod brakedown;
 mod gemini;
 mod hyrax;
 mod ipa;
 mod kzg;
-mod zeromorph;
 
 pub use brakedown::{
     MultilinearBrakedown, MultilinearBrakedownCommitment, MultilinearBrakedownParams,

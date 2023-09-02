@@ -1,4 +1,3 @@
-
 #![allow(clippy::type_complexity)]
 use crate::{
     loader::{
@@ -12,45 +11,49 @@ use crate::{
 };
 use std::{
     cell::{Ref, RefCell, RefMut},
+    env::set_var,
     fmt::{self, Debug},
+    fs,
+    iter,
     marker::PhantomData,
     ops::{Add, AddAssign, Deref, Mul, MulAssign, Neg, Sub, SubAssign},
     rc::Rc,
 };
-
 use ark_std::{end_timer, start_timer};
 use common::*;
-use halo2_base::{gates::flex_gate::GateStrategy, AssignedValue};
-use halo2_base::utils::fs::gen_srs;
-use halo2_base::{gates::{builder::FlexGateConfigParams, RangeChip, RangeInstructions}, 
-    halo2_proofs::{circuit::Value, plonk::Assigned},
-    QuantumCell::{Constant, Existing},
-};
-use halo2_proofs::{
-    circuit::{Layouter, SimpleFloorPlanner},
-    dev::MockProver,
-    halo2curves::{
-        bn256::{Bn256, Fr, G1Affine},
-        group::ff::Field,
-        FieldExt,
+use halo2_base::{
+    gates::{
+        builder::{FlexGateConfigParams, GateThreadBuilder, GateCircuitBuilder, RangeCircuitBuilder},
+        flex_gate::GateStrategy,
+        RangeChip, RangeInstructions, GateChip, GateInstructions,
     },
-    plonk::{
-        self, create_proof, keygen_pk, keygen_vk, Circuit, ConstraintSystem, Error, ProvingKey,
-        Selector, VerifyingKey,
-    },
-    poly::{
-        commitment::ParamsProver,
-        kzg::{
-            commitment::ParamsKZG,
-            multiopen::{ProverGWC, VerifierGWC},
-            strategy::AccumulatorStrategy,
+    halo2_proofs::{
+        circuit::{Layouter, SimpleFloorPlanner, Value},
+        dev::MockProver,
+        halo2curves::{
+            bn256::{Bn256, Fr, Fq, G1Affine},
+            group::ff::Field,
+            FieldExt,
         },
-        Rotation, VerificationStrategy,
+        plonk::{self, create_proof, keygen_pk, keygen_vk, Circuit, ConstraintSystem, Error, ProvingKey, Selector, VerifyingKey, Assigned},
+        poly::{
+            commitment::{ParamsProver, ParamsKZG, KZGCommitmentScheme},
+            kzg::{strategy::AccumulatorStrategy, multiopen::{ProverGWC, VerifierGWC}},
+            Rotation, VerificationStrategy,
+        },
+        transcript::{Blake2bWrite, Challenge255, TranscriptWriterBuffer},
     },
+    utils::{fs::gen_srs, testing::{check_proof, gen_proof}, ScalarField},
+    Context, AssignedValue, QuantumCell::{Constant, Existing},
 };
-
+use ff::Field;
+use halo2_ecc::{
+    bn254::FpChip,
+    fields::FieldChip,
+    bigint::{sub, big_less_than, add_no_carry, sub_no_carry, mul_no_carry,select, FixedOverflowInteger, ProperCrtUint, CRTInteger},
+};
 use itertools::Itertools;
-use rand_chacha::rand_core::OsRng;
+use rand::{rngs::OsRng, rand_core::OsRng};
 use snark_verifier::{
     loader::{self, native::NativeLoader, Loader, ScalarLoader},
     pcs::{
@@ -68,28 +71,12 @@ use snark_verifier::{
         SnarkVerifier,
     },
 };
-use std::{env::set_var, fs, iter, marker::PhantomData, rc::Rc};
-
-use ff::Field;
-use halo2_base::gates::builder::{GateCircuitBuilder, GateThreadBuilder};
-use halo2_base::gates::flex_gate::{GateChip, GateInstructions};
-use halo2_base::halo2_proofs::{
-    halo2curves::bn256::{Bn256, Fr, G1Affine},
-    plonk::*,
-    poly::kzg::{
-        commitment::{KZGCommitmentScheme, ParamsKZG},
-        multiopen::ProverGWC,
-    },
-    transcript::{Blake2bWrite, Challenge255, TranscriptWriterBuffer},
-};
-use halo2_base::utils::ScalarField;
-use halo2_base::Context;
-use rand::rngs::OsRng;
-use halo2_ecc::bigint::{sub, big_less_than, add_no_carry, sub_no_carry, mul_no_carry,select, FixedOverflowInteger, ProperCrtUint, CRTInteger};
+use std::env::set_var;
 
 pub const NUM_LIMBS: usize = 4;
 pub const NUM_LIMB_BITS: usize = 65;
 pub const NUM_LIMBS_LOG2_CEIL:usize = 2;
+//pub const LOOKUP_BITS: usize = 8;
 const NUM_SUBLIMBS: usize = 5;
 const NUM_LOOKUPS: usize = 1;
 
@@ -98,6 +85,7 @@ const RATE: usize = 4;
 const R_F: usize = 8;
 const R_P: usize = 60;
 const SECURE_MDS: usize = 0;
+
 
 type Poseidon<L> = hash::Poseidon<Fr, L, T, RATE>;
 type PoseidonTranscript<L, S> =
@@ -111,6 +99,8 @@ use snark_verifier::util::arithmetic::fe_to_limbs;
 // pub fn fe_from_limbs<F1: PrimeFieldBits, F2: PrimeField>(
 // }
 use snark_verifier::util::arithmetic::fe_from_limbs;
+
+//let lookup_bits: usize = var("LOOKUP_BITS").unwrap_or_else(|_| panic!("LOOKUP_BITS not set")).parse().unwrap();
 
 // fn x_y_is_identity<C: CurveAffine>(ec_point: &C) -> [C::Base; 3] {
 //     let coords = ec_point.coordinates().unwrap();
@@ -417,29 +407,29 @@ use snark_verifier::util::arithmetic::fe_from_limbs;
 // }
 
 #[derive(Clone)]
-pub struct AssignedBase<F: ScalarField> {
-    scalar: CRTInteger<F>,
+pub struct AssignedBase<F: PrimeField, N: PrimeField> {
+    scalar: ProperCrtUint<F>,
     limbs: Vec<Witness<F>>,
 }
 
-// impl<F: PrimeField, N: PrimeField> AssignedBase<F, N> {
-//     fn assigned_cells(&self) -> impl Iterator<Item = &Witness<N>> {
-//         self.limbs.iter()
-//     }
-// }
+impl<F: PrimeField, N: PrimeField> AssignedBase<F, N> {
+    fn assigned_cells(&self) -> impl Iterator<Item = &Witness<N>> {
+        self.limbs.iter()
+    }
+}
 
-// impl<F: PrimeField, N: PrimeField> Debug for AssignedBase<F, N> {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         let mut s = f.debug_struct("AssignedBase");
-//         let mut value = None;
-//         self.scalar.value().map(|scalar| value = Some(scalar));
-//         if let Some(value) = value {
-//             s.field("scalar", &value).finish()
-//         } else {
-//             s.finish()
-//         }
-//     }
-// }
+impl<F: PrimeField, N: PrimeField> Debug for AssignedBase<F, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut s = f.debug_struct("AssignedBase");
+        let mut value = None;
+        self.scalar.value().map(|scalar| value = Some(scalar));
+        if let Some(value) = value {
+            s.field("scalar", &value).finish()
+        } else {
+            s.finish()
+        }
+    }
+}
 
 // #[derive(Clone)]
 // pub struct AssignedEcPoint<C: CurveAffine> {
@@ -538,7 +528,11 @@ pub struct AssignedBase<F: ScalarField> {
 //     }
 
 // todo figure out Layouter<C::Scalar> needed?
-impl<F: ScalarField> GateChip<C> for Chip<C> {
+
+struct Chip<F> {
+}
+
+impl<F: ScalarField> Chip<C> {
 
     fn constrain_equal(
         &self,
@@ -685,23 +679,36 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
     fn assign_constant_base(
         &self,
         _: &mut impl Layouter<C::Scalar>,
-        constant: C::Base,
+        gate: &impl GateInstructions<F>,
+        ctx: &mut Context<F>,
+        constant: Fq,
     ) -> Result<Self::AssignedBase, Error> {
-        let collector = &mut self.collector.borrow_mut();
-        let mut integer_chip = IntegerChip::new(collector, &self.rns);
-        let scalar = integer_chip.register_constant(constant);
+        let range = RangeChip::default(8);
+        let chip = FpChip::new(&range, 88, 3);
+        let scalar = chip.load_constant(
+            ctx,
+            constant,
+        );
+        // fix this
         let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
         Ok(AssignedBase { scalar, limbs })
     }
 
+    // check if we need to do load reduced form -- does less than Fq ?
     fn assign_witness_base(
         &self,
         _: &mut impl Layouter<C::Scalar>,
-        witness: Value<C::Base>,
+        gate: &impl GateInstructions<F>,
+        ctx: &mut Context<F>,
+        witness: Fq,
     ) -> Result<Self::AssignedBase, Error> {
-        let collector = &mut self.collector.borrow_mut();
-        let mut integer_chip = IntegerChip::new(collector, &self.rns);
-        let scalar = integer_chip.range(self.rns.from_fe(witness), Range::Remainder);
+        let range = RangeChip::default(8);
+        let chip = FpChip::new(&range, 88, 3);
+        let scalar = chip.load_private(
+            ctx,
+            witness,
+        );
+        // fix this
         let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
         Ok(AssignedBase { scalar, limbs })
     }
@@ -714,20 +721,6 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
         value.scalar.value().assert_if_known(f)
     }
 
-    // fn select_base(
-    //     &self,
-    //     _: &mut impl Layouter<C::Scalar>,
-    //     condition: &Self::Assigned,
-    //     when_true: &Self::AssignedBase,
-    //     when_false: &Self::AssignedBase,
-    // ) -> Result<Self::AssignedBase, Error> {
-    //     let collector = &mut self.collector.borrow_mut();
-    //     let mut integer_chip = IntegerChip::new(collector, &self.rns);
-    //     let scalar = integer_chip.select(&when_true.scalar, &when_false.scalar, condition);
-    //     let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
-    //     Ok(AssignedBase { scalar, limbs })
-    // }
-
     fn select_base(
         &self,
         _: &mut impl Layouter<C::Scalar>,
@@ -736,8 +729,11 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
         when_true: &Self::AssignedBase,
         when_false: &Self::AssignedBase,
     ) -> Result<Self::AssignedBase, Error> {
-        let (scalar) = select::crt(
-        gate,
+        let range = RangeChip::default(8);
+        let chip = FpChip::new(&range, 88, 3);
+        let result_proper: ProperCrtUint<_> = Selectable::<_, ProperCrtUint<_>>::select(&chip, ctx, when_true, when_false, condition);
+
+        let scalar = chip.select(
         ctx,
         when_true,
         when_false,
@@ -748,22 +744,6 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
     Ok(AssignedBase { scalar, limbs })
     }
 
-    // todo go through  halo2-ecc/src/bigint/add_no_carry.rs and /bigint/mod.rs 
-    // fn add_base(
-    //     &self,
-    //     _: &mut impl Layouter<C::Scalar>,
-    //     ctx: &mut Context<F>,
-    //     lhs: &Self::AssignedBase,
-    //     rhs: &Self::AssignedBase,
-    // ) -> Result<Self::AssignedBase, Error> {
-    //     let collector = &mut self.collector.borrow_mut();
-    //     let mut integer_chip = IntegerChip::new(collector, &self.rns);
-    //     let scalar = integer_chip.add(&lhs.scalar, &rhs.scalar);
-    //     let scalar = integer_chip.reduce(&scalar);
-    //     let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
-    //     Ok(AssignedBase { scalar, limbs })
-    // }
-
     fn add_base(
         &self,
         _: &mut impl Layouter<C::Scalar>,
@@ -772,18 +752,18 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
     ) -> Result<Self::AssignedBase, Error> {
-        let (scalar,_) = add_no_carry::crt(
-            gate,
+        let range = RangeChip::default(8);
+        let chip = FpChip::new(&range, 88, 3);
+        let scalar = ProperCrtUint(chip.add_no_carry(
             ctx,
-            a,
-            b,
-        );
+            lhs,
+            rhs,
+        ));
         // fix this
         let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
         Ok(AssignedBase { scalar, limbs })
     }
 
-    // do sub with carry or not?
     fn sub_base(
         &self,
         _: &mut impl Layouter<C::Scalar>,
@@ -792,12 +772,13 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
     ) -> Result<Self::AssignedBase, Error> {
-        let (scalar,_) = sub_no_carry::crt(
-            gate,
+        let range = RangeChip::default(8);
+        let chip = FpChip::new(&range, 88, 3);
+        let scalar = ProperCrtUint(chip.sub_no_carry(
             ctx,
-            a,
-            b,
-        );
+            lhs,
+            rhs,
+        ));
         // fix this
         let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
         Ok(AssignedBase { scalar, limbs })
@@ -811,13 +792,15 @@ impl<F: ScalarField> GateChip<C> for Chip<C> {
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
     ) -> Result<Self::AssignedBase, Error> {
-        let (scalar,_) = mul_no_carry::crt(
-            gate,
+        let range = RangeChip::default(8);
+        let chip = FpChip::new(&range, 88, 3);
+        let a = chip.load_private(ctx, Fq::zero());
+        let b = chip.load_private(ctx, Fq::zero());
+        let scalar = ProperCrtUint(chip.mul_no_carry(
             ctx,
             a,
             b,
-            NUM_LIMBS_LOG2_CEIL,
-        );
+        ));
         // fix this
         let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
         Ok(AssignedBase { scalar, limbs })

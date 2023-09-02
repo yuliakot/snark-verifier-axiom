@@ -4,6 +4,7 @@ use crate::{
     pcs::kzg::{Gwc19, KzgAs},
     verifier::{plonk::protocol::{Query,Expression,CommonPolynomial}, SnarkVerifier},
     pcs::{
+        // todo fix yulia
         // multilinear::{
         //     Gemini, MultilinearHyrax, MultilinearHyraxParams, MultilinearIpa, MultilinearIpaParams,
         // },
@@ -37,10 +38,10 @@ use std::{
 };
 use halo2_base::{halo2_proofs,gates::flex_gate::{GateChip, GateInstructions}, utils::ScalarField, AssignedValue, Context, QuantumCell::{self, Constant, Existing, Witness, WitnessFraction},
 };
-use halo2_proofs::plonk::{
+use halo2_proofs::{circuit::Value,plonk::{
     create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Assigned, Circuit, Column,
     ConstraintSystem, Error, Fixed, Instance, ProvingKey, VerifyingKey,
-};
+}};
 
 pub struct Chip<F> {
     pub gate: GateChip<F>,
@@ -114,14 +115,13 @@ impl <F: ScalarField> Chip<F>{
                             }
                         }))
                         .chain((0..distance).map(|idx| {
-                            // fix nth_bit
                             if pat.nth_bit(idx + num_x) {
                                 &one
                             } else {
                                 &zero
                             }
                         }))
-                        // fix cloned(), cloned_vec
+                        // todo fix cloned(), cloned_vec
                         .cloned()
                         .collect_vec()
                 })
@@ -142,6 +142,7 @@ impl <F: ScalarField> Chip<F>{
                                 &x[idx]
                             }
                         }))
+                        // todo fix cloned(), cloned_vec
                         .cloned()
                         .collect_vec()
                 })
@@ -594,235 +595,239 @@ impl <F: ScalarField> Chip<F>{
         Ok((g_prime_comm, x, g_prime_eval))
     }
 
-    // fn verify_ipa<'a>(
-    //     &self,
-    //     vp: &MultilinearIpaParams<C::Secondary>,
-    //     comm: impl IntoIterator<Item = (&'a Self::AssignedSecondary, &'a AssignedValue<F>)>,
-    //     point: &[AssignedValue<F>],
-    //     eval: &AssignedValue<F>,
-    //     transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
-    // ) -> Result<(), Error>
-    // where
-    //     Self::AssignedSecondary: 'a,
-    //     AssignedValue<F>: 'a,
-    // {
-    //     let xi_0 = transcript.squeeze_challenge()?.as_ref().clone();
+    // todo change these 3 fns to verify_hyperplonk_gemini_kzg - used by protostar prover
+    fn verify_ipa<'a>(
+        &self,
+        ctx: &mut Context<F>,
+        vp: &MultilinearIpaParams<C::Secondary>,
+        comm: impl IntoIterator<Item = (&'a Self::AssignedSecondary, &'a AssignedValue<F>)>,
+        point: &[AssignedValue<F>],
+        eval: &AssignedValue<F>,
+        transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
+    ) -> Result<(), Error>
+    where
+        Self::AssignedSecondary: 'a,
+        AssignedValue<F>: 'a,
+    {
+        let xi_0 = transcript.squeeze_challenge()?.as_ref().clone();
 
-    //     let (ls, rs, xis) = iter::repeat_with(|| {
-    //         Ok::<_, Error>((
-    //             transcript.read_commitment()?,
-    //             transcript.read_commitment()?,
-    //             transcript.squeeze_challenge()?.as_ref().clone(),
-    //         ))
-    //     })
-    //     .take(point.len())
-    //     .try_collect::<_, Vec<_>, _>()?
-    //     .into_iter()
-    //     .multiunzip::<(Vec<_>, Vec<_>, Vec<_>)>();
-    //     let g_k = transcript.read_commitment()?;
-    //     let c = transcript.read_field_element()?;
+        let (ls, rs, xis) = iter::repeat_with(|| {
+            Ok::<_, Error>((
+                transcript.read_commitment()?,
+                transcript.read_commitment()?,
+                transcript.squeeze_challenge()?.as_ref().clone(),
+            ))
+        })
+        .take(point.len())
+        .try_collect::<_, Vec<_>, _>()?
+        .into_iter()
+        .multiunzip::<(Vec<_>, Vec<_>, Vec<_>)>();
+        let g_k = transcript.read_commitment()?;
+        let c = transcript.read_field_element()?;
 
-    //     let xi_invs = xis
-    //         .iter()
-    //         .map(|xi| self.invert_incomplete( xi))
-    //         .try_collect::<_, Vec<_>, _>()?;
-    //     let eval_prime = self.mul( &xi_0, eval)?;
+        let xi_invs = xis
+            .iter()
+            .map(|xi| self.invert_incomplete( xi))
+            .try_collect::<_, Vec<_>, _>()?;
+        let eval_prime = self.mul( &xi_0, eval)?;
 
-    //     let h_eval = {
-    //         let one = ctx.load_constant( F::one())?;
-    //         let terms = izip_eq!(point, xis.iter().rev())
-    //             .map(|(point, xi)| {
-    //                 let point_xi = self.mul( point, xi)?;
-    //                 let neg_point = self.neg( point)?;
-    //                 self.sum( [&one, &neg_point, &point_xi])
-    //             })
-    //             .try_collect::<_, Vec<_>, _>()?;
-    //         self.product( &terms)?
-    //     };
-    //     let h_coeffs = {
-    //         let one = ctx.load_constant( F::one())?;
-    //         let mut coeff = vec![one];
+        let h_eval = {
+            let one = ctx.load_constant( F::one())?;
+            let terms = izip_eq!(point, xis.iter().rev())
+                .map(|(point, xi)| {
+                    let point_xi = self.mul( point, xi)?;
+                    let neg_point = self.neg( point)?;
+                    self.sum( [&one, &neg_point, &point_xi])
+                })
+                .try_collect::<_, Vec<_>, _>()?;
+            self.product( &terms)?
+        };
+        let h_coeffs = {
+            let one = ctx.load_constant( F::one())?;
+            let mut coeff = vec![one];
 
-    //         for xi in xis.iter().rev() {
-    //             let extended = coeff
-    //                 .iter()
-    //                 .map(|coeff| self.mul( coeff, xi))
-    //                 .try_collect::<_, Vec<_>, _>()?;
-    //             coeff.extend(extended);
-    //         }
+            for xi in xis.iter().rev() {
+                let extended = coeff
+                    .iter()
+                    .map(|coeff| self.mul( coeff, xi))
+                    .try_collect::<_, Vec<_>, _>()?;
+                coeff.extend(extended);
+            }
 
-    //         coeff
-    //     };
+            coeff
+        };
 
-    //     let neg_c = self.neg( &c)?;
-    //     let h_scalar = {
-    //         let mut tmp = self.mul( &neg_c, &h_eval)?;
-    //         tmp = self.mul( &tmp, &xi_0)?;
-    //         self.add( &tmp, &eval_prime)?
-    //     };
-    //     let identity = ctx.load_constant_secondary( C::Secondary::identity())?;
-    //     let out = {
-    //         let h = ctx.load_constant_secondary( *vp.h())?;
-    //         let (mut bases, mut scalars) = comm.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
-    //         bases.extend(chain![&ls, &rs, [&h, &g_k]]);
-    //         scalars.extend(chain![&xi_invs, &xis, [&h_scalar, &neg_c]]);
-    //         self.variable_msm_secondary( bases, scalars)?
-    //     };
-    //     self.constrain_equal_secondary( &out, &identity)?;
+        let neg_c = self.neg( &c)?;
+        let h_scalar = {
+            let mut tmp = self.mul( &neg_c, &h_eval)?;
+            tmp = self.mul( &tmp, &xi_0)?;
+            self.add( &tmp, &eval_prime)?
+        };
+        let identity = ctx.load_constant_secondary( C::Secondary::identity())?;
+        let out = {
+            let h = ctx.load_constant_secondary( *vp.h())?;
+            let (mut bases, mut scalars) = comm.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
+            bases.extend(chain![&ls, &rs, [&h, &g_k]]);
+            scalars.extend(chain![&xi_invs, &xis, [&h_scalar, &neg_c]]);
+            self.variable_msm_secondary( bases, scalars)?
+        };
+        self.constrain_equal_secondary( &out, &identity)?;
 
-    //     let out = {
-    //         let bases = vp.g();
-    //         let scalars = h_coeffs;
-    //         self.fixed_msm_secondary( bases, &scalars)?
-    //     };
-    //     self.constrain_equal_secondary( &out, &g_k)?;
+        let out = {
+            let bases = vp.g();
+            let scalars = h_coeffs;
+            self.fixed_msm_secondary( bases, &scalars)?
+        };
+        self.constrain_equal_secondary( &out, &g_k)?;
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 
-    // fn verify_hyrax(
-    //     &self,
-    //     vp: &MultilinearHyraxParams<C::Secondary>,
-    //     comm: &[(&Vec<Self::AssignedSecondary>, AssignedValue<F>)],
-    //     point: &[AssignedValue<F>],
-    //     eval: &AssignedValue<F>,
-    //     transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
-    // ) -> Result<(), Error> {
-    //     let (lo, hi) = point.split_at(vp.row_num_vars());
-    //     let scalars = self.eq_xy_coeffs( hi)?;
+    fn verify_hyrax(
+        &self,
+        ctx: &mut Context<F>,
+        vp: &MultilinearHyraxParams<C::Secondary>,
+        comm: &[(&Vec<Self::AssignedSecondary>, AssignedValue<F>)],
+        point: &[AssignedValue<F>],
+        eval: &AssignedValue<F>,
+        transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
+    ) -> Result<(), Error> {
+        let (lo, hi) = point.split_at(vp.row_num_vars());
+        let scalars = self.eq_xy_coeffs(ctx, hi)?;
 
-    //     let comm = comm
-    //         .iter()
-    //         .map(|(comm, rhs)| {
-    //             let scalars = scalars
-    //                 .iter()
-    //                 .map(|lhs| self.mul( lhs, rhs))
-    //                 .try_collect::<_, Vec<_>, _>()?;
-    //             Ok::<_, Error>(izip_eq!(*comm, scalars))
-    //         })
-    //         .try_collect::<_, Vec<_>, _>()?
-    //         .into_iter()
-    //         .flatten()
-    //         .collect_vec();
-    //     let comm = comm.iter().map(|(comm, scalar)| (*comm, scalar));
+        let comm = comm
+            .iter()
+            .map(|(comm, rhs)| {
+                let scalars = scalars
+                    .iter()
+                    .map(|lhs| self.mul( lhs, rhs))
+                    .try_collect::<_, Vec<_>, _>()?;
+                Ok::<_, Error>(izip_eq!(*comm, scalars))
+            })
+            .try_collect::<_, Vec<_>, _>()?
+            .into_iter()
+            .flatten()
+            .collect_vec();
+        let comm = comm.iter().map(|(comm, scalar)| (*comm, scalar));
 
-    //     self.verify_ipa( vp.ipa(), comm, lo, eval, transcript)
-    // }
+        self.verify_ipa(ctx, vp.ipa(), comm, lo, eval, transcript)
+    }
 
-    // fn verify_hyrax_hyperplonk(
-    //     &self,
-    //     vp: &HyperPlonkVerifierParam<F, MultilinearHyrax<C::Secondary>>,
-    //     instances: Value<&[F]>,
-    //     transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
-    // ) -> Result<Vec<AssignedValue<F>>, Error>
-    // where
-    //     F: Serialize + DeserializeOwned,
-    //     C::Secondary: Serialize + DeserializeOwned,
-    // {
-    //     assert_eq!(vp.num_instances.len(), 1);
-    //     let instances = vec![instances
-    //         .transpose_vec(vp.num_instances[0])
-    //         .into_iter()
-    //         .map(|instance| self.assign_witness( instance.copied()))
-    //         .try_collect::<_, Vec<_>, _>()?];
+    fn verify_hyrax_hyperplonk(
+        &self,
+        ctx: &mut Context<F>,
+        vp: &HyperPlonkVerifierParam<F, MultilinearHyrax<C::Secondary>>,
+        instances: Value<&[F]>,
+        transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
+    ) -> Result<Vec<AssignedValue<F>>, Error>
+    where
+        F: Serialize + DeserializeOwned,
+        C::Secondary: Serialize + DeserializeOwned,
+    {
+        assert_eq!(vp.num_instances.len(), 1);
+        let instances = vec![instances
+            .transpose_vec(vp.num_instances[0])
+            .into_iter()
+            .map(|instance| self.assign_witness( instance.copied()))
+            .try_collect::<_, Vec<_>, _>()?];
 
-    //     transcript.common_field_elements(&instances[0])?;
+        transcript.common_field_elements(&instances[0])?;
 
-    //     let mut witness_comms = Vec::with_capacity(vp.num_witness_polys.iter().sum());
-    //     let mut challenges = Vec::with_capacity(vp.num_challenges.iter().sum::<usize>() + 3);
-    //     for (num_polys, num_challenges) in
-    //         vp.num_witness_polys.iter().zip_eq(vp.num_challenges.iter())
-    //     {
-    //         witness_comms.extend(
-    //             iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
-    //                 .take(*num_polys)
-    //                 .try_collect::<_, Vec<_>, _>()?,
-    //         );
-    //         challenges.extend(
-    //             transcript
-    //                 .squeeze_challenges( *num_challenges)?
-    //                 .iter()
-    //                 .map(AsRef::as_ref)
-    //                 .cloned(),
-    //         );
-    //     }
+        let mut witness_comms = Vec::with_capacity(vp.num_witness_polys.iter().sum());
+        let mut challenges = Vec::with_capacity(vp.num_challenges.iter().sum::<usize>() + 3);
+        for (num_polys, num_challenges) in
+            vp.num_witness_polys.iter().zip_eq(vp.num_challenges.iter())
+        {
+            witness_comms.extend(
+                iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
+                    .take(*num_polys)
+                    .try_collect::<_, Vec<_>, _>()?,
+            );
+            challenges.extend(
+                transcript
+                    .squeeze_challenges( *num_challenges)?
+                    .iter()
+                    .map(AsRef::as_ref)
+                    .cloned(),
+            );
+        }
 
-    //     let beta = transcript.squeeze_challenge()?.as_ref().clone();
+        let beta = transcript.squeeze_challenge()?.as_ref().clone();
 
-    //     let lookup_m_comms =
-    //         iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
-    //             .take(vp.num_lookups)
-    //             .try_collect::<_, Vec<_>, _>()?;
+        let lookup_m_comms =
+            iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
+                .take(vp.num_lookups)
+                .try_collect::<_, Vec<_>, _>()?;
 
-    //     let gamma = transcript.squeeze_challenge()?.as_ref().clone();
+        let gamma = transcript.squeeze_challenge()?.as_ref().clone();
 
-    //     let lookup_h_permutation_z_comms =
-    //         iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
-    //             .take(vp.num_lookups + vp.num_permutation_z_polys)
-    //             .try_collect::<_, Vec<_>, _>()?;
+        let lookup_h_permutation_z_comms =
+            iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
+                .take(vp.num_lookups + vp.num_permutation_z_polys)
+                .try_collect::<_, Vec<_>, _>()?;
 
-    //     let alpha = transcript.squeeze_challenge()?.as_ref().clone();
-    //     let y = transcript
-    //         .squeeze_challenges( vp.num_vars)?
-    //         .iter()
-    //         .map(AsRef::as_ref)
-    //         .cloned()
-    //         .collect_vec();
+        let alpha = transcript.squeeze_challenge()?.as_ref().clone();
+        let y = transcript
+            .squeeze_challenges( vp.num_vars)?
+            .iter()
+            .map(AsRef::as_ref)
+            .cloned()
+            .collect_vec();
 
-    //     challenges.extend([beta, gamma, alpha]);
+        challenges.extend([beta, gamma, alpha]);
 
-    //     let zero = ctx.load_constant(F::zero())?;
-    //     let (points, evals) = self.verify_sum_check_and_query(
-    //         ctx,
-    //         vp.num_vars,
-    //         &vp.expression,
-    //         &zero,
-    //         &instances,
-    //         &challenges,
-    //         &y,
-    //         transcript,
-    //     )?;
+        let zero = ctx.load_constant(F::zero())?;
+        let (points, evals) = self.verify_sum_check_and_query(
+            ctx,
+            vp.num_vars,
+            &vp.expression,
+            &zero,
+            &instances,
+            &challenges,
+            &y,
+            transcript,
+        )?;
 
-    //     let dummy_comm = vec![
-    //         ctx.load_constant_secondary( C::Secondary::identity())?;
-    //         vp.pcs.num_chunks()
-    //     ];
-    //     let preprocess_comms = vp
-    //         .preprocess_comms
-    //         .iter()
-    //         .map(|comm| {
-    //             comm.0
-    //                 .iter()
-    //                 .map(|c| ctx.load_constant_secondary( *c))
-    //                 .try_collect::<_, Vec<_>, _>()
-    //         })
-    //         .try_collect::<_, Vec<_>, _>()?;
-    //     let permutation_comms = vp
-    //         .permutation_comms
-    //         .iter()
-    //         .map(|comm| {
-    //             comm.1
-    //                  .0
-    //                 .iter()
-    //                 .map(|c| ctx.load_constant_secondary( *c))
-    //                 .try_collect::<_, Vec<_>, _>()
-    //         })
-    //         .try_collect::<_, Vec<_>, _>()?;
-    //     let comms = iter::empty()
-    //         .chain(iter::repeat(dummy_comm).take(vp.num_instances.len()))
-    //         .chain(preprocess_comms)
-    //         .chain(witness_comms)
-    //         .chain(permutation_comms)
-    //         .chain(lookup_m_comms)
-    //         .chain(lookup_h_permutation_z_comms)
-    //         .collect_vec();
+        let dummy_comm = vec![
+            ctx.load_constant_secondary( C::Secondary::identity())?;
+            vp.pcs.num_chunks()
+        ];
+        let preprocess_comms = vp
+            .preprocess_comms
+            .iter()
+            .map(|comm| {
+                comm.0
+                    .iter()
+                    .map(|c| ctx.load_constant_secondary( *c))
+                    .try_collect::<_, Vec<_>, _>()
+            })
+            .try_collect::<_, Vec<_>, _>()?;
+        let permutation_comms = vp
+            .permutation_comms
+            .iter()
+            .map(|comm| {
+                comm.1
+                     .0
+                    .iter()
+                    .map(|c| ctx.load_constant_secondary( *c))
+                    .try_collect::<_, Vec<_>, _>()
+            })
+            .try_collect::<_, Vec<_>, _>()?;
+        let comms = iter::empty()
+            .chain(iter::repeat(dummy_comm).take(vp.num_instances.len()))
+            .chain(preprocess_comms)
+            .chain(witness_comms)
+            .chain(permutation_comms)
+            .chain(lookup_m_comms)
+            .chain(lookup_h_permutation_z_comms)
+            .collect_vec();
 
-    //     let (comm, point, eval) =
-    //         self.multilinear_pcs_batch_verify( &comms, &points, &evals, transcript)?;
+        let (comm, point, eval) =
+            self.multilinear_pcs_batch_verify(ctx, &comms, &points, &evals, transcript)?;
 
-    //     self.verify_hyrax( &vp.pcs, &comm, &point, &eval, transcript)?;
+        self.verify_hyrax(ctx, &vp.pcs, &comm, &point, &eval, transcript)?;
 
-    //     Ok(instances.into_iter().next().unwrap())
-    // }
+        Ok(instances.into_iter().next().unwrap())
+    }
 
 }
