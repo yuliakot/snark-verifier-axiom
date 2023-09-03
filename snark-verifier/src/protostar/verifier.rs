@@ -20,7 +20,7 @@ use crate::{
         },
         chain,
         //expression::{CommonPolynomial},
-        //hash::{Hash as _, Keccak256},
+        hash,
         izip, izip_eq,
         //figure out compat and inmemory transcript 
         transcript::{TranscriptRead, TranscriptWrite}, //InMemoryTranscript
@@ -41,7 +41,25 @@ use halo2_base::{halo2_proofs,gates::flex_gate::{GateChip, GateInstructions}, ut
 use halo2_proofs::{circuit::Value,plonk::{
     create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Assigned, Circuit, Column,
     ConstraintSystem, Error, Fixed, Instance, ProvingKey, VerifyingKey,
-}};
+    },
+halo2curves::{
+    bn256::{Bn256, Fr, G1Affine},
+    group::ff::Field,
+    FieldExt,
+    }
+};
+
+const LIMBS: usize = 3;
+const BITS: usize = 88;
+const T: usize = 3;
+const RATE: usize = 2;
+const R_F: usize = 8;
+const R_P: usize = 57;
+const SECURE_MDS: usize = 0;
+
+type Poseidon<L> = hash::Poseidon<Fr, L, T, RATE>;
+type PoseidonTranscript<L, S> =
+    halo2::transcript::halo2::PoseidonTranscript<G1Affine, L, S, T, RATE, R_F, R_P>;
 
 pub struct Chip<F> {
     pub gate: GateChip<F>,
