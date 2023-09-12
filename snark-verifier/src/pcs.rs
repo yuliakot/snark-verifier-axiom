@@ -14,6 +14,7 @@ use std::{fmt::Debug, marker::PhantomData};
 
 pub mod ipa;
 pub mod kzg;
+pub mod gemini;
 
 /// Query to an oracle.
 /// It assumes all queries are based on the same point, but with some `shift`.

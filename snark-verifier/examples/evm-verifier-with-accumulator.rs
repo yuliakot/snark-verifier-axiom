@@ -29,7 +29,7 @@ use snark_verifier::{
 use std::{env::set_var, fs::File, io::Cursor, rc::Rc};
 
 const LIMBS: usize = 3;
-const BITS: usize = 88;
+const BITS: usize = 3;
 
 type As = KzgAs<Bn256, Gwc19>;
 type PlonkSuccinctVerifier = verifier::plonk::PlonkSuccinctVerifier<As, LimbsEncoding<LIMBS, BITS>>;

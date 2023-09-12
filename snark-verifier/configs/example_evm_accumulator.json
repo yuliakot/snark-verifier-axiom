@@ -1,7 +1,7 @@
 {
-  "degree": 21,
+  "degree": 8,
   "num_advice": 5,
   "num_lookup_advice": 1,
   "num_fixed": 1,
-  "lookup_bits": 20
+  "lookup_bits": 7
 }
