@@ -1,3 +1,5 @@
+### Ignore strawman files and util_halo2lib
+
 # Goal
 We only need to write the final IVC verifier circuit which runs the nark verfier and the decider on the final IVC proof. [IVC](split_acc.jpg)
 
@@ -22,3 +24,4 @@ agg2 should run acc verifier on C2
 
 ### TODO 
 1. Figure out transcript in halo2-lib for the sum_check -- https://github.com/amit0365/snark-verifier-axiom/blob/ae393a3a665bca31b52600741f2d3f52c3334b16/snark-verifier/src/protostar/verifier.rs#L289
+2. Add multilinear support for verify_gemini

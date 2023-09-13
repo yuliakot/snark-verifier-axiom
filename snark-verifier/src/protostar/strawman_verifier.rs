@@ -1,218 +1,75 @@
-use crate::{
-    system::halo2::{compile, transcript::evm::EvmTranscript, Config},
-    loader::{evm::{self, encode_calldata, Address, EvmLoader, ExecutorBuilder},halo2},
-    pcs::kzg::{Gwc19, KzgAs},
-    verifier::{plonk::protocol::{Query,Expression,CommonPolynomial}, SnarkVerifier},
-    pcs::{
-        // todo fix yulia
-        // multilinear::{
-        //     Gemini, MultilinearHyrax, MultilinearHyraxParams, MultilinearIpa, MultilinearIpaParams,
-        // },
-        Evaluation,
-    },
-    poly::multilinear::{
-        rotation_eval_coeff_pattern, rotation_eval_point_pattern, zip_self, MultilinearPolynomial,
-    },
-    util::{
-        arithmetic::{
-            fe_to_fe, powers, Rotation, 
-            BooleanHypercube, Field, MultiMillerLoop, PrimeCurveAffine, PrimeField,
-        },
-        chain,
-        //expression::{CommonPolynomial},
-        hash,
-        izip, izip_eq,
-        //figure out compat and inmemory transcript 
-        transcript::{TranscriptRead, TranscriptWrite}, //InMemoryTranscript
-        BitIndex, DeserializeOwned, Itertools, Serialize,
-    },
-};
-use rand::RngCore;
-use std::{
-    borrow::{Borrow, BorrowMut, Cow},
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
-    fmt::Debug,
-    hash::Hash,
-    iter,
-    marker::PhantomData,
-};
-use halo2_base::{halo2_proofs,gates::flex_gate::{GateChip, GateInstructions}, utils::{ScalarField,CurveAffineExt}, AssignedValue, Context, QuantumCell::{self, Constant, Existing, Witness, WitnessFraction},
-};
-use halo2_proofs::{circuit::Value,plonk::{
-    create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Assigned, Circuit, Column,
-    ConstraintSystem, Error, Fixed, Instance, ProvingKey, VerifyingKey,
-    },
-halo2curves::{
-    bn256::{Bn256, Fr, G1Affine},
-    group::ff::Field,
-    FieldExt,
-    }
-};
-use halo2_ecc::{fields::{fp::FpChip, FieldChip, PrimeField}, bigint::ProperCrtUint};
-
-const LIMBS: usize = 3;
-const BITS: usize = 88;
-const T: usize = 3;
-const RATE: usize = 2;
-const R_F: usize = 8;
-const R_P: usize = 57;
-const SECURE_MDS: usize = 0;
-
-type Poseidon<L> = hash::Poseidon<Fr, L, T, RATE>;
-type PoseidonTranscript<L, S> =
-    halo2::transcript::halo2::PoseidonTranscript<G1Affine, L, S, T, RATE, R_F, R_P>;
-
-
-pub struct Chip<F, CF, SF, GA>
-where
-    GA: CurveAffineExt<Base = CF, ScalarExt = SF>,
-{
-    pub base_chip: &FpChip<F, CF>,  // base_chip is a generic fpchip, used for ec operations
-    pub scalar_chip: FpChip<F, SF>, // non-native representation of the base field chip
-}
-
-impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
-    where
-    GA: CurveAffineExt<Base = CF, ScalarExt = SF>
-{
-    fn powers(
-        &self,
-        ctx: &mut Context<F>,
-        x: &ProperCrtUint<F>,
-        n: usize,
-    ) -> Result<Vec<ProperCrtUint<F>>, Error> {
-        Ok(match n {
-            0 => Vec::new(),
-            1 => vec![self.scalar_chip.load_constant(ctx, GA::Base::one())?],
-            2 => vec![
-                self.scalar_chip.load_constant(ctx, GA::Base::one())?,
-                x.clone(),
-            ],
-            _ => {
-                let mut powers = Vec::with_capacity(n);
-                powers.push(self.scalar_chip.load_constant(ctx, GA::Base::one())?);
-                powers.push(x.clone());
-                for _ in 0..n - 2 {
-                    powers.push(self.scalar_chip.mul(ctx,powers.last().unwrap(), x)?);
-                }
-                powers
-            }
-        });
-    }
-
-    fn inner_product(
-        &self,
-        ctx: &mut Context<F>,
-        a: impl IntoIterator<Item = ProperCrtUint<F>>,
-        b: impl IntoIterator<Item = ProperCrtUint<F>>,
-    ) -> Result<ProperCrtUint<F>, Error> {
-        self.inner_product_simple(ctx, a, b);
-        Ok(ctx.last().unwrap())
-    }
-
-    fn inner_product_simple(
-        &self,
-        ctx: &mut Context<F>,
-        a: impl IntoIterator<Item = ProperCrtUint<F>>,
-        b: impl IntoIterator<Item = ProperCrtUint<F>>,
-    ) -> Result<bool, Error> {
-        
-        let mut sum;
-        let mut a = a.into_iter();
-        let mut b = b.into_iter().peekable();
-
-        let b_starts_with_one = matches!(b.peek(), Some(self.scalar_chip.load_constant(ctx, c)) if c == &GA::Base::one());
-        let cells = if b_starts_with_one {
-            b.next();
-            let start_a = a.next().unwrap().into();
-            sum = *start_a.value();
-            iter::once(start_a)
-        } else {
-            sum = GA::Base::zero();
-            iter::once(self.scalar_chip.load_constant(ctx, GA::Base::zero()))
-        }
-        .chain(a.zip(b).flat_map(|(a, b)| {
-            let a = a.into();
-            sum += *a.value() * b.value();
-            [a, b, self.scalar_chip.load_private(ctx, sum)]
-        }));
-
-        if ctx.witness_gen_only() {
-            ctx.assign_region(cells, vec![]);
-        } else {
-            let cells = cells.collect::<Vec<_>>();
-            let lo = cells.len();
-            let len = lo / 3;
-            ctx.assign_region(cells, (0..len).map(|i| 3 * i as isize));
-        };
-
-        Ok(b_starts_with_one)
-    }
-
+trait ProtostarHyperPlonkUtil<C: TwoChainCurve>: TwoChainCurveInstruction<C> {
     fn hornor(
         &self,
-        ctx: &mut Context<F>,
-        coeffs: &[ProperCrtUint<F>],
-        x: &ProperCrtUint<F>,
-    ) -> Result<ProperCrtUint<F>, Error> {
-        let powers_of_x = self.powers(ctx, x, coeffs.len())?;
-        Ok(self.scalar_chip.inner_product(ctx, coeffs, powers_of_x))
+        layouter: &mut impl Layouter<C::Scalar>,
+        coeffs: &[Self::AssignedBase],
+        x: &Self::AssignedBase,
+    ) -> Result<Self::AssignedBase, Error> {
+        let powers_of_x = self.powers_base(layouter, x, coeffs.len())?;
+        self.inner_product_base(layouter, coeffs, &powers_of_x)
     }
 
-    fn lagrange_and_eval(
+    fn barycentric_weights(
         &self,
-        ctx: &mut Context<F>,
-        coords: &[(ProperCrtUint<F>, ProperCrtUint<F>)],
-        x: ProperCrtUint<F>,
-    ) -> (ProperCrtUint<F>, ProperCrtUint<F>) {
-        assert!(!coords.is_empty(), "coords should not be empty");
-        let mut z = ProperCrtUint(self.scalar_chip.sub_no_carry(ctx, x, coords[0].0));
-        for coord in coords.iter().skip(1) {
-            let sub = ProperCrtUint(self.scalar_chip.sub_no_carry(ctx, x, coord.0));
-            z = self.scalar_chip.mul(ctx, z, sub);
+        layouter: &mut impl Layouter<C::Scalar>,
+        points: &[Self::AssignedBase],
+    ) -> Result<Vec<Self::AssignedBase>, Error> {
+        if points.len() == 1 {
+            return Ok(vec![self.assign_constant_base(layouter, C::Base::ONE)?]);
         }
-        let mut eval = None;
-        for i in 0..coords.len() {
-            // compute (x - x_i) * Prod_{j != i} (x_i - x_j)
-            let mut denom = ProperCrtUint(self.scalar_chip.sub_no_carry(ctx, x, coords[i].0));
-            for j in 0..coords.len() {
-                if i == j {
-                    continue;
-                }
-                let sub = ProperCrtUint(self.scalar_chip.sub_no_carry(ctx, coords[i].0, coords[j].0));
-                denom = self.scalar_chip.mul(ctx, denom, sub);
-            }
-
-            let is_zero = self.scalar_chip.is_zero(ctx, denom);
-            self.scalar_chip.gate().assert_is_const(ctx, &is_zero, &F::zero());
-
-            // y_i / denom
-            let quot = self.scalar_chip.divide_unsafe(ctx, coords[i].1, denom);
-            eval = if let Some(eval) = eval {
-                let eval = ProperCrtUint(self.scalar_chip.add_no_carry(ctx, eval, quot));
-                Some(eval)
-            } else {
-                Some(quot)
-            };
-        }
-        let out = self.scalar_chip.mul(ctx, eval.unwrap(), z);
-        (out, z)
+        points
+            .iter()
+            .enumerate()
+            .map(|(j, point_j)| {
+                let diffs = points
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, point_i)| {
+                        (i != j).then(|| self.sub_base(layouter, point_j, point_i))
+                    })
+                    .try_collect::<_, Vec<_>, _>()?;
+                let weight_inv = self.product_base(layouter, &diffs)?;
+                self.invert_incomplete_base(layouter, &weight_inv)
+            })
+            .collect()
     }
 
-
-    fn rotation_eval_points( 
+    fn barycentric_interpolate(
         &self,
-        ctx: &mut Context<F>,
-        x: &[ProperCrtUint<F>],
-        one_minus_x: &[ProperCrtUint<F>],
+        layouter: &mut impl Layouter<C::Scalar>,
+        weights: &[Self::AssignedBase],
+        points: &[Self::AssignedBase],
+        evals: &[Self::AssignedBase],
+        x: &Self::AssignedBase,
+    ) -> Result<Self::AssignedBase, Error> {
+        let (coeffs, sum_inv) = {
+            let coeffs = izip_eq!(weights, points)
+                .map(|(weight, point)| {
+                    let coeff = self.sub_base(layouter, x, point)?;
+                    self.div_incomplete_base(layouter, weight, &coeff)
+                })
+                .try_collect::<_, Vec<_>, _>()?;
+            let sum = self.sum_base(layouter, &coeffs)?;
+            let sum_inv = self.invert_incomplete_base(layouter, &sum)?;
+            (coeffs, sum_inv)
+        };
+        let numer = self.inner_product_base(layouter, &coeffs, evals)?;
+        self.mul_base(layouter, &numer, &sum_inv)
+    }
+
+    fn rotation_eval_points(
+        &self,
+        layouter: &mut impl Layouter<C::Scalar>,
+        x: &[Self::AssignedBase],
+        one_minus_x: &[Self::AssignedBase],
         rotation: Rotation,
-    ) -> Result<Vec<Vec<ProperCrtUint<F>>>, Error> {
+    ) -> Result<Vec<Vec<Self::AssignedBase>>, Error> {
         if rotation == Rotation::cur() {
             return Ok(vec![x.to_vec()]);
         }
 
-        let zero = self.scalar_chip.load_constant(ctx,GA::Base::zero())?;
-        let one = self.scalar_chip.load_constant(ctx,GA::Base::one())?;
+        let zero = self.assign_constant_base(layouter, C::Base::ZERO)?;
+        let one = self.assign_constant_base(layouter, C::Base::ONE)?;
         let distance = rotation.distance();
         let num_x = x.len() - distance;
         let points = if rotation < Rotation::cur() {
@@ -237,7 +94,6 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
                                 &zero
                             }
                         }))
-                        // todo fix cloned(), cloned_vec
                         .cloned()
                         .collect_vec()
                 })
@@ -258,23 +114,22 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
                                 &x[idx]
                             }
                         }))
-                        // todo fix cloned(), cloned_vec
                         .cloned()
                         .collect_vec()
                 })
                 .collect()
-            };
+        };
 
         Ok(points)
     }
 
     fn rotation_eval(
         &self,
-        ctx: &mut Context<F>,
-        x: &[ProperCrtUint<F>],
+        layouter: &mut impl Layouter<C::Scalar>,
+        x: &[Self::AssignedBase],
         rotation: Rotation,
-        evals_for_rotation: &[ProperCrtUint<F>],
-    ) -> Result<ProperCrtUint<F>, Error> {
+        evals_for_rotation: &[Self::AssignedBase],
+    ) -> Result<Self::AssignedBase, Error> {
         if rotation == Rotation::cur() {
             assert!(evals_for_rotation.len() == 1);
             return Ok(evals_for_rotation[0].clone());
@@ -314,10 +169,9 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
                                 if bit {
                                     std::mem::swap(&mut eval_0, &mut eval_1);
                                 }
-                                let diff = self.scalar_chip.sub_no_carry(ctx, eval_1, eval_0)?;
-                                let diff_x_i = self.scalar_chip.mul(ctx, &diff, x_i)?;
-                                //todo check if this can cause overflow
-                                ProperCrtUint(self.scalar_chip.add_no_carry(ctx, &diff_x_i, eval_0))
+                                let diff = self.sub_base(layouter, eval_1, eval_0)?;
+                                let diff_x_i = self.mul_base(layouter, &diff, x_i)?;
+                                self.add_base(layouter, &diff_x_i, eval_0)
                             })
                             .try_collect::<_, Vec<_>, _>()
                             .map(Into::into)
@@ -329,17 +183,17 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
 
     fn eq_xy_coeffs(
         &self,
-        ctx: &mut Context<F>,
-        y: &[ProperCrtUint<F>],
-    ) -> Result<Vec<ProperCrtUint<F>>, Error> {
-        let mut evals = vec![self.scalar_chip.load_constant(ctx, GA::Base::one())?];
+        layouter: &mut impl Layouter<C::Scalar>,
+        y: &[Self::AssignedBase],
+    ) -> Result<Vec<Self::AssignedBase>, Error> {
+        let mut evals = vec![self.assign_constant_base(layouter, C::Base::ONE)?];
 
         for y_i in y.iter().rev() {
             evals = evals
                 .iter()
                 .map(|eval| {
-                    let hi = self.scalar_chip.mul(ctx, eval, y_i)?;
-                    let lo = ProperCrtUint(self.scalar_chip.sub_no_carry(ctx, eval, &hi))?;
+                    let hi = self.mul_base(layouter, eval, y_i)?;
+                    let lo = self.sub_base(layouter, eval, &hi)?;
                     Ok([lo, hi])
                 })
                 .try_collect::<_, Vec<_>, Error>()?
@@ -353,37 +207,37 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
 
     fn eq_xy_eval(
         &self,
-        ctx: &mut Context<F>,
-        x: &[ProperCrtUint<F>],
-        y: &[ProperCrtUint<F>],
-    ) -> Result<ProperCrtUint<F>, Error> {
+        layouter: &mut impl Layouter<C::Scalar>,
+        x: &[Self::AssignedBase],
+        y: &[Self::AssignedBase],
+    ) -> Result<Self::AssignedBase, Error> {
         let terms = izip_eq!(x, y)
             .map(|(x, y)| {
-                let one = self.scalar_chip.load_constant(ctx, GA::Base::one())?;
-                let xy = self.scalar_chip.mul(ctx, x, y)?;
-                let two_xy = self.scalar_chip.add_no_carry(ctx, &xy, &xy)?;
-                let two_xy_plus_one = self.scalar_chip.add_no_carry(ctx, &two_xy, &one)?;
-                let x_plus_y = self.scalar_chip.add_no_carry(ctx, x, y)?;
-                ProperCrtUint(self.scalar_chip.sub_no_carry(ctx, &two_xy_plus_one, &x_plus_y))
+                let one = self.assign_constant_base(layouter, C::Base::ONE)?;
+                let xy = self.mul_base(layouter, x, y)?;
+                let two_xy = self.add_base(layouter, &xy, &xy)?;
+                let two_xy_plus_one = self.add_base(layouter, &two_xy, &one)?;
+                let x_plus_y = self.add_base(layouter, x, y)?;
+                self.sub_base(layouter, &two_xy_plus_one, &x_plus_y)
             })
             .try_collect::<_, Vec<_>, _>()?;
-        self.product( &terms)
+        self.product_base(layouter, &terms)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn evaluate(
         &self,
-        ctx: &mut Context<F>,
-        expression: &Expression<F>,
-        identity_eval: &ProperCrtUint<F>,
-        lagrange_evals: &BTreeMap<i32, ProperCrtUint<F>>,
-        eq_xy_eval: &ProperCrtUint<F>,
-        query_evals: &BTreeMap<Query, ProperCrtUint<F>>,
-        challenges: &[ProperCrtUint<F>],
-    ) -> Result<ProperCrtUint<F>, Error> {
+        layouter: &mut impl Layouter<C::Scalar>,
+        expression: &Expression<C::Base>,
+        identity_eval: &Self::AssignedBase,
+        lagrange_evals: &BTreeMap<i32, Self::AssignedBase>,
+        eq_xy_eval: &Self::AssignedBase,
+        query_evals: &BTreeMap<Query, Self::AssignedBase>,
+        challenges: &[Self::AssignedBase],
+    ) -> Result<Self::AssignedBase, Error> {
         let mut evaluate = |expression| {
             self.evaluate(
-                ctx,
+                layouter,
                 expression,
                 identity_eval,
                 lagrange_evals,
@@ -393,7 +247,7 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             )
         };
         match expression {
-            Expression::Constant(scalar) => Ok(self.scalar_chip.load_constant(ctx,*scalar)),
+            Expression::Constant(scalar) => self.assign_constant_base(layouter, *scalar),
             Expression::CommonPolynomial(poly) => match poly {
                 CommonPolynomial::Identity => Ok(identity_eval.clone()),
                 CommonPolynomial::Lagrange(i) => Ok(lagrange_evals[i].clone()),
@@ -406,22 +260,22 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             Expression::Challenge(index) => Ok(challenges[*index].clone()),
             Expression::Negated(a) => {
                 let a = evaluate(a)?;
-                Ok(self.scalar_chip.neg(ctx, &a))
+                self.neg_base(layouter, &a)
             }
             Expression::Sum(a, b) => {
                 let a = evaluate(a)?;
                 let b = evaluate(b)?;
-                Ok(self.scalar_chip.add_no_carry(ctx, &a, &b))
+                self.add_base(layouter, &a, &b)
             }
             Expression::Product(a, b) => {
                 let a = evaluate(a)?;
                 let b = evaluate(b)?;
-                Ok(self.scalar_chip.mul(ctx, &a, &b))
+                self.mul_base(layouter, &a, &b)
             }
             Expression::Scaled(a, scalar) => {
                 let a = evaluate(a)?;
-                let scalar = self.scalar_chip.load_constant(ctx,*scalar)?;
-                Ok(self.scalar_chip.mul(ctx, &a, &scalar))
+                let scalar = self.assign_constant_base(layouter, *scalar)?;
+                self.mul_base(layouter, &a, &scalar)
             }
             Expression::DistributePowers(exprs, scalar) => {
                 assert!(!exprs.is_empty());
@@ -431,57 +285,58 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
                 let scalar = evaluate(scalar)?;
                 let exprs = exprs.iter().map(evaluate).try_collect::<_, Vec<_>, _>()?;
                 let mut scalars = Vec::with_capacity(exprs.len());
-                scalars.push(self.scalar_chip.load_constant(ctx,GA::Base::one())?);
+                scalars.push(self.assign_constant_base(layouter, C::Base::ONE)?);
                 scalars.push(scalar);
                 for _ in 2..exprs.len() {
-                    scalars.push(self.scalar_chip.mul(ctx, &scalars[1], scalars.last().unwrap())?);
+                    scalars.push(self.mul_base(layouter, &scalars[1], scalars.last().unwrap())?);
                 }
-                Ok(self.scalar_chip.inner_product(ctx, &scalars, &exprs))
+                self.inner_product_base(layouter, &scalars, &exprs)
             }
         }
     }
 
     fn verify_sum_check<const IS_MSG_EVALS: bool>(
         &self,
-        ctx: &mut Context<F>,
+        layouter: &mut impl Layouter<C::Scalar>,
         num_vars: usize,
         degree: usize,
-        sum: &ProperCrtUint<F>,
-        transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
-    ) -> Result<(ProperCrtUint<F>, Vec<ProperCrtUint<F>>), Error> {
-        // check this
-        let p = F::zero();
-        let points = ctx.assign_witnesses(iter::successors(Some(p), move |state| Some(GA::Base::one() + state)).collect_vec());
+        sum: &Self::AssignedBase,
+        transcript: &mut impl TranscriptInstruction<C, TccChip = Self>,
+    ) -> Result<(Self::AssignedBase, Vec<Self::AssignedBase>), Error> {
+        let points = steps(C::Base::ZERO).take(degree + 1).collect_vec();
+        let weights = barycentric_weights(&points)
+            .into_iter()
+            .map(|weight| self.assign_constant_base(layouter, weight))
+            .try_collect::<_, Vec<_>, _>()?;
+        let points = points
+            .into_iter()
+            .map(|point| self.assign_constant_base(layouter, point))
+            .try_collect::<_, Vec<_>, _>()?;
 
         let mut sum = Cow::Borrowed(sum);
         let mut x = Vec::with_capacity(num_vars);
-        
         for _ in 0..num_vars {
-            let msg = transcript.read_field_elements( degree + 1)?;
-            x.push(transcript.squeeze_challenge()?.as_ref().clone());
+            let msg = transcript.read_field_elements(layouter, degree + 1)?;
+            x.push(transcript.squeeze_challenge(layouter)?.as_ref().clone());
 
             let sum_from_evals = if IS_MSG_EVALS {
-                self.scalar_chip.add(ctx, &msg[0], &msg[1])?
+                self.add_base(layouter, &msg[0], &msg[1])?
             } else {
-                self.scalar_chip.sum(ctx, chain![[&msg[0], &msg[0]], &msg[1..]])?
+                self.sum_base(layouter, chain![[&msg[0], &msg[0]], &msg[1..]])?
             };
-            self.scalar_chip.constrain_equal( &sum, &sum_from_evals)?;
-
-            let coords = points
-            .iter()
-            .cloned()
-            .zip(msg.iter().cloned())
-            .collect();
+            self.constrain_equal_base(layouter, &sum, &sum_from_evals)?;
 
             if IS_MSG_EVALS {
-                sum = Cow::Owned(self.scalar_chip.lagrange_and_eval(
-                    ctx,
-                    &coords,
+                sum = Cow::Owned(self.barycentric_interpolate(
+                    layouter,
+                    &weights,
+                    &points,
+                    &msg,
                     x.last().unwrap(),
                 )?);
             } else {
-                sum = Cow::Owned(self.hornor(ctx, &msg, x.last().unwrap())?);
-            };
+                sum = Cow::Owned(self.hornor(layouter, &msg, x.last().unwrap())?);
+            }
         }
 
         Ok((sum.into_owned(), x))
@@ -491,25 +346,25 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
     #[allow(clippy::type_complexity)]
     fn verify_sum_check_and_query(
         &self,
-        ctx: &mut Context<F>,
+        layouter: &mut impl Layouter<C::Scalar>,
         num_vars: usize,
-        expression: &Expression<F>,
-        sum: &ProperCrtUint<F>,
-        instances: &[Vec<ProperCrtUint<F>>],
-        challenges: &[ProperCrtUint<F>],
-        y: &[ProperCrtUint<F>],
-        transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
+        expression: &Expression<C::Base>,
+        sum: &Self::AssignedBase,
+        instances: &[Vec<Self::AssignedBase>],
+        challenges: &[Self::AssignedBase],
+        y: &[Self::AssignedBase],
+        transcript: &mut impl TranscriptInstruction<C, TccChip = Self>,
     ) -> Result<
         (
-            Vec<Vec<ProperCrtUint<F>>>,
-            Vec<Evaluation<ProperCrtUint<F>>>,
+            Vec<Vec<Self::AssignedBase>>,
+            Vec<Evaluation<Self::AssignedBase>>,
         ),
         Error,
     > {
         let degree = expression.degree();
 
         let (x_eval, x) =
-            self.verify_sum_check::<true>( ctx, num_vars, degree, sum, transcript)?;
+            self.verify_sum_check::<true>(layouter, num_vars, degree, sum, transcript)?;
 
         let pcs_query = {
             let mut used_query = expression.used_query();
@@ -520,9 +375,9 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             .iter()
             .map(|query| {
                 let evals_for_rotation =
-                    transcript.read_field_elements( 1 << query.rotation().distance())?;
+                    transcript.read_field_elements(layouter, 1 << query.rotation().distance())?;
                 let eval = self.rotation_eval(
-                    ctx,
+                    layouter,
                     x.as_ref(),
                     query.rotation(),
                     &evals_for_rotation,
@@ -533,10 +388,10 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             .into_iter()
             .unzip::<_, _, Vec<_>, Vec<_>>();
 
-        let one = self.scalar_chip.load_constant(ctx,GA::Base::one())?;
+        let one = self.assign_constant_base(layouter, C::Base::ONE)?;
         let one_minus_x = x
             .iter()
-            .map(|x_i| self.sub( &one, x_i))
+            .map(|x_i| self.sub_base(layouter, &one, x_i))
             .try_collect::<_, Vec<_>, _>()?;
 
         let (lagrange_evals, query_evals) = {
@@ -562,8 +417,8 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
                 .into_iter()
                 .map(|i| {
                     let b = bh[i.rem_euclid(1 << num_vars as i32) as usize];
-                    let eval = self.product(
-                        
+                    let eval = self.product_base(
+                        layouter,
                         (0..num_vars).map(|idx| {
                             if b.nth_bit(idx) {
                                 &x[idx]
@@ -589,8 +444,8 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
                             .take(instances[query.poly()].len())
                             .collect_vec()
                     };
-                    let eval = self.scalar_chip.inner_product(
-                        ctx,
+                    let eval = self.inner_product_base(
+                        layouter,
                         &instances[query.poly()],
                         is.iter().map(|i| lagrange_evals.get(i).unwrap()),
                     )?;
@@ -604,16 +459,16 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             )
         };
         let identity_eval = {
-            let powers_of_two = powers(GA::Base::one().double())
+            let powers_of_two = powers(C::Base::ONE.double())
                 .take(x.len())
-                .map(|power_of_two| self.scalar_chip.load_constant(ctx,power_of_two))
+                .map(|power_of_two| self.assign_constant_base(layouter, power_of_two))
                 .try_collect::<_, Vec<_>, Error>()?;
-            self.scalar_chip.inner_product(ctx, &powers_of_two, &x)?
+            self.inner_product_base(layouter, &powers_of_two, &x)?
         };
-        let eq_xy_eval = self.eq_xy_eval(ctx, &x, y)?;
+        let eq_xy_eval = self.eq_xy_eval(layouter, &x, y)?;
 
         let eval = self.evaluate(
-            ctx,
+            layouter,
             expression,
             &identity_eval,
             &lagrange_evals,
@@ -622,19 +477,19 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             challenges,
         )?;
 
-        ctx.constrain_equal(&x_eval, &eval)?;
+        self.constrain_equal_base(layouter, &x_eval, &eval)?;
 
         let points = pcs_query
             .iter()
             .map(Query::rotation)
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .map(|rotation| self.rotation_eval_points(ctx, &x, &one_minus_x, rotation))
+            .map(|rotation| self.rotation_eval_points(layouter, &x, &one_minus_x, rotation))
             .try_collect::<_, Vec<_>, _>()?
             .into_iter()
             .flatten()
             .collect_vec();
-        // fix this point offset from hyperplonk backend
+
         let point_offset = point_offset(&pcs_query);
         let evals = pcs_query
             .iter()
@@ -651,16 +506,16 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
     #[allow(clippy::type_complexity)]
     fn multilinear_pcs_batch_verify<'a, Comm>(
         &self,
-        ctx: &mut Context<F>,
+        layouter: &mut impl Layouter<C::Scalar>,
         comms: &'a [Comm],
-        points: &[Vec<ProperCrtUint<F>>],
-        evals: &[Evaluation<ProperCrtUint<F>>],
-        transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
+        points: &[Vec<Self::AssignedBase>],
+        evals: &[Evaluation<Self::AssignedBase>],
+        transcript: &mut impl TranscriptInstruction<C, TccChip = Self>,
     ) -> Result<
         (
-            Vec<(&'a Comm, ProperCrtUint<F>)>,
-            Vec<ProperCrtUint<F>>,
-            ProperCrtUint<F>,
+            Vec<(&'a Comm, Self::AssignedBase)>,
+            Vec<Self::AssignedBase>,
+            Self::AssignedBase,
         ),
         Error,
     > {
@@ -668,23 +523,23 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
 
         let ell = evals.len().next_power_of_two().ilog2() as usize;
         let t = transcript
-            .squeeze_challenges( ell)?
+            .squeeze_challenges(layouter, ell)?
             .iter()
             .map(AsRef::as_ref)
             .cloned()
             .collect_vec();
 
-        let eq_xt = self.eq_xy_coeffs(ctx, &t)?;
-        let tilde_gs_sum = self.scalar_chip.inner_product(
-            ctx,
+        let eq_xt = self.eq_xy_coeffs(layouter, &t)?;
+        let tilde_gs_sum = self.inner_product_base(
+            layouter,
             &eq_xt[..evals.len()],
             evals.iter().map(Evaluation::value),
         )?;
         let (g_prime_eval, x) =
-            self.verify_sum_check::<false>(ctx, num_vars, 2, &tilde_gs_sum, transcript)?;
+            self.verify_sum_check::<false>(layouter, num_vars, 2, &tilde_gs_sum, transcript)?;
         let eq_xy_evals = points
             .iter()
-            .map(|point| self.eq_xy_eval(ctx, &x, point))
+            .map(|point| self.eq_xy_eval(layouter, &x, point))
             .try_collect::<_, Vec<_>, _>()?;
 
         let g_prime_comm = {
@@ -692,10 +547,10 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
                 Ok::<_, Error>(BTreeMap::<_, _>::new()),
                 |scalars, (eval, eq_xt_i)| {
                     let mut scalars = scalars?;
-                    let scalar = self.scalar_chip.mul(ctx, &eq_xy_evals[eval.point()], eq_xt_i)?;
+                    let scalar = self.mul_base(layouter, &eq_xy_evals[eval.point()], eq_xt_i)?;
                     match scalars.entry(eval.poly()) {
                         Entry::Occupied(mut entry) => {
-                            *entry.get_mut() = self.scalar_chip.add(ctx, entry.get(), &scalar)?;
+                            *entry.get_mut() = self.add_base(layouter, entry.get(), &scalar)?;
                         }
                         Entry::Vacant(entry) => {
                             entry.insert(scalar);
@@ -713,62 +568,60 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
         Ok((g_prime_comm, x, g_prime_eval))
     }
 
-    // todo change these 3 fns to verify_hyperplonk_gemini_kzg - used by protostar prover
-    // todo change self.add(a,b) and other similar fns with self.scalar_chip.add(ctx,a,b)
     fn verify_ipa<'a>(
         &self,
-        ctx: &mut Context<F>,
+        layouter: &mut impl Layouter<C::Scalar>,
         vp: &MultilinearIpaParams<C::Secondary>,
-        comm: impl IntoIterator<Item = (&'a Self::AssignedSecondary, &'a ProperCrtUint<F>)>,
-        point: &[ProperCrtUint<F>],
-        eval: &ProperCrtUint<F>,
-        transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
+        comm: impl IntoIterator<Item = (&'a Self::AssignedSecondary, &'a Self::AssignedBase)>,
+        point: &[Self::AssignedBase],
+        eval: &Self::AssignedBase,
+        transcript: &mut impl TranscriptInstruction<C, TccChip = Self>,
     ) -> Result<(), Error>
     where
         Self::AssignedSecondary: 'a,
-        ProperCrtUint<F>: 'a,
+        Self::AssignedBase: 'a,
     {
-        let xi_0 = transcript.squeeze_challenge()?.as_ref().clone();
+        let xi_0 = transcript.squeeze_challenge(layouter)?.as_ref().clone();
 
         let (ls, rs, xis) = iter::repeat_with(|| {
             Ok::<_, Error>((
-                transcript.read_commitment()?,
-                transcript.read_commitment()?,
-                transcript.squeeze_challenge()?.as_ref().clone(),
+                transcript.read_commitment(layouter)?,
+                transcript.read_commitment(layouter)?,
+                transcript.squeeze_challenge(layouter)?.as_ref().clone(),
             ))
         })
         .take(point.len())
         .try_collect::<_, Vec<_>, _>()?
         .into_iter()
         .multiunzip::<(Vec<_>, Vec<_>, Vec<_>)>();
-        let g_k = transcript.read_commitment()?;
-        let c = transcript.read_field_element()?;
+        let g_k = transcript.read_commitment(layouter)?;
+        let c = transcript.read_field_element(layouter)?;
 
         let xi_invs = xis
             .iter()
-            .map(|xi| self.invert_incomplete( xi))
+            .map(|xi| self.invert_incomplete_base(layouter, xi))
             .try_collect::<_, Vec<_>, _>()?;
-        let eval_prime = self.mul( &xi_0, eval)?;
+        let eval_prime = self.mul_base(layouter, &xi_0, eval)?;
 
         let h_eval = {
-            let one = self.scalar_chip.load_constant(ctx, GA::Base::one())?;
+            let one = self.assign_constant_base(layouter, C::Base::ONE)?;
             let terms = izip_eq!(point, xis.iter().rev())
                 .map(|(point, xi)| {
-                    let point_xi = self.mul( point, xi)?;
-                    let neg_point = self.neg( point)?;
-                    self.sum( [&one, &neg_point, &point_xi])
+                    let point_xi = self.mul_base(layouter, point, xi)?;
+                    let neg_point = self.neg_base(layouter, point)?;
+                    self.sum_base(layouter, [&one, &neg_point, &point_xi])
                 })
                 .try_collect::<_, Vec<_>, _>()?;
-            self.product( &terms)?
+            self.product_base(layouter, &terms)?
         };
         let h_coeffs = {
-            let one = self.scalar_chip.load_constant(ctx, GA::Base::one())?;
+            let one = self.assign_constant_base(layouter, C::Base::ONE)?;
             let mut coeff = vec![one];
 
             for xi in xis.iter().rev() {
                 let extended = coeff
                     .iter()
-                    .map(|coeff| self.mul( coeff, xi))
+                    .map(|coeff| self.mul_base(layouter, coeff, xi))
                     .try_collect::<_, Vec<_>, _>()?;
                 coeff.extend(extended);
             }
@@ -776,58 +629,50 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             coeff
         };
 
-        let neg_c = self.neg( &c)?;
+        let neg_c = self.neg_base(layouter, &c)?;
         let h_scalar = {
-            let mut tmp = self.mul( &neg_c, &h_eval)?;
-            tmp = self.mul( &tmp, &xi_0)?;
-            self.add( &tmp, &eval_prime)?
+            let mut tmp = self.mul_base(layouter, &neg_c, &h_eval)?;
+            tmp = self.mul_base(layouter, &tmp, &xi_0)?;
+            self.add_base(layouter, &tmp, &eval_prime)?
         };
-        let range = RangeChip::<C>::default(lookup_bits);
-        let fp_chip = FpChip::<C>::new(&range, BITS, LIMBS);
-        let ecc_chip = BaseFieldEccChip::new(&fp_chip);
-        // todo find similar to C::Secondary::identity() in Fr
-        let identity = ecc_chip.assign_constant( C::Secondary::identity())?;
+        let identity = self.assign_constant_secondary(layouter, C::Secondary::identity())?;
         let out = {
-            let h = ecc_chip.assign_constant( *vp.h())?;
+            let h = self.assign_constant_secondary(layouter, *vp.h())?;
             let (mut bases, mut scalars) = comm.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
             bases.extend(chain![&ls, &rs, [&h, &g_k]]);
             scalars.extend(chain![&xi_invs, &xis, [&h_scalar, &neg_c]]);
-            // todo change the inputs in form of a tuple
-            ecc_chip.variable_base_msm( ctx,(bases, scalars))?
+            self.variable_base_msm_secondary(layouter, bases, scalars)?
         };
-        // is this equal to assert_equal in shim.rs? 
-        ecc_chip.constrain_equal_secondary( &out, &identity)?;
+        self.constrain_equal_secondary(layouter, &out, &identity)?;
 
         let out = {
             let bases = vp.g();
             let scalars = h_coeffs;
-            // todo change the inputs in form of a tuple
-            ecc_chip.fixed_base_msm( bases, &scalars)?
+            self.fixed_base_msm_secondary(layouter, bases, &scalars)?
         };
-        ecc_chip.constrain_equal_secondary( &out, &g_k)?;
+        self.constrain_equal_secondary(layouter, &out, &g_k)?;
 
         Ok(())
     }
 
-
     fn verify_hyrax(
         &self,
-        ctx: &mut Context<F>,
+        layouter: &mut impl Layouter<C::Scalar>,
         vp: &MultilinearHyraxParams<C::Secondary>,
-        comm: &[(&Vec<Self::AssignedSecondary>, ProperCrtUint<F>)], // &[(&Vec<EcPoint<F, ProperCrtUint<F>>, ProperCrtUint<F>)]
-        point: &[ProperCrtUint<F>],
-        eval: &ProperCrtUint<F>,
-        transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
+        comm: &[(&Vec<Self::AssignedSecondary>, Self::AssignedBase)],
+        point: &[Self::AssignedBase],
+        eval: &Self::AssignedBase,
+        transcript: &mut impl TranscriptInstruction<C, TccChip = Self>,
     ) -> Result<(), Error> {
         let (lo, hi) = point.split_at(vp.row_num_vars());
-        let scalars = self.eq_xy_coeffs(ctx, hi)?;
+        let scalars = self.eq_xy_coeffs(layouter, hi)?;
 
         let comm = comm
             .iter()
             .map(|(comm, rhs)| {
                 let scalars = scalars
                     .iter()
-                    .map(|lhs| self.mul( lhs, rhs))
+                    .map(|lhs| self.mul_base(layouter, lhs, rhs))
                     .try_collect::<_, Vec<_>, _>()?;
                 Ok::<_, Error>(izip_eq!(*comm, scalars))
             })
@@ -837,25 +682,25 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             .collect_vec();
         let comm = comm.iter().map(|(comm, scalar)| (*comm, scalar));
 
-        self.verify_ipa(ctx, vp.ipa(), comm, lo, eval, transcript)
+        self.verify_ipa(layouter, vp.ipa(), comm, lo, eval, transcript)
     }
 
-    fn verify_gemini_hyperplonk(
+    fn verify_hyrax_hyperplonk(
         &self,
-        ctx: &mut Context<F>,
-        vp: &HyperPlonkVerifierParam<F, MultilinearHyrax<C::Secondary>>,
-        instances: Value<&[F]>,
-        transcript: &mut impl TranscriptInstruction<F, TccChip = Self>,
-    ) -> Result<(), Error>
+        layouter: &mut impl Layouter<C::Scalar>,
+        vp: &HyperPlonkVerifierParam<C::Base, MultilinearHyrax<C::Secondary>>,
+        instances: Value<&[C::Base]>,
+        transcript: &mut impl TranscriptInstruction<C, TccChip = Self>,
+    ) -> Result<Vec<Self::AssignedBase>, Error>
     where
-        F: Serialize + DeserializeOwned,
+        C::Base: Serialize + DeserializeOwned,
         C::Secondary: Serialize + DeserializeOwned,
     {
         assert_eq!(vp.num_instances.len(), 1);
         let instances = vec![instances
             .transpose_vec(vp.num_instances[0])
             .into_iter()
-            .map(|instance| self.assign_witness( instance.copied()))
+            .map(|instance| self.assign_witness_base(layouter, instance.copied()))
             .try_collect::<_, Vec<_>, _>()?];
 
         transcript.common_field_elements(&instances[0])?;
@@ -866,36 +711,36 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             vp.num_witness_polys.iter().zip_eq(vp.num_challenges.iter())
         {
             witness_comms.extend(
-                iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
+                iter::repeat_with(|| transcript.read_commitments(layouter, vp.pcs.num_chunks()))
                     .take(*num_polys)
                     .try_collect::<_, Vec<_>, _>()?,
             );
             challenges.extend(
                 transcript
-                    .squeeze_challenges( *num_challenges)?
+                    .squeeze_challenges(layouter, *num_challenges)?
                     .iter()
                     .map(AsRef::as_ref)
                     .cloned(),
             );
         }
 
-        let beta = transcript.squeeze_challenge()?.as_ref().clone();
+        let beta = transcript.squeeze_challenge(layouter)?.as_ref().clone();
 
         let lookup_m_comms =
-            iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
+            iter::repeat_with(|| transcript.read_commitments(layouter, vp.pcs.num_chunks()))
                 .take(vp.num_lookups)
                 .try_collect::<_, Vec<_>, _>()?;
 
-        let gamma = transcript.squeeze_challenge()?.as_ref().clone();
+        let gamma = transcript.squeeze_challenge(layouter)?.as_ref().clone();
 
         let lookup_h_permutation_z_comms =
-            iter::repeat_with(|| transcript.read_commitments( vp.pcs.num_chunks()))
+            iter::repeat_with(|| transcript.read_commitments(layouter, vp.pcs.num_chunks()))
                 .take(vp.num_lookups + vp.num_permutation_z_polys)
                 .try_collect::<_, Vec<_>, _>()?;
 
-        let alpha = transcript.squeeze_challenge()?.as_ref().clone();
+        let alpha = transcript.squeeze_challenge(layouter)?.as_ref().clone();
         let y = transcript
-            .squeeze_challenges( vp.num_vars)?
+            .squeeze_challenges(layouter, vp.num_vars)?
             .iter()
             .map(AsRef::as_ref)
             .cloned()
@@ -903,9 +748,9 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
 
         challenges.extend([beta, gamma, alpha]);
 
-        let zero = self.scalar_chip.load_constant(ctx,GA::Base::zero())?;
+        let zero = self.assign_constant_base(layouter, C::Base::ZERO)?;
         let (points, evals) = self.verify_sum_check_and_query(
-            ctx,
+            layouter,
             vp.num_vars,
             &vp.expression,
             &zero,
@@ -915,12 +760,8 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             transcript,
         )?;
 
-        let range = RangeChip::<Fr>::default(lookup_bits);
-        let fp_chip = FpChip::<Fr>::new(&range, BITS, LIMBS);
-        let ecc_chip = BaseFieldEccChip::new(&fp_chip);
-
         let dummy_comm = vec![
-            ecc_chip.assign_constant( C::Secondary::identity())?;
+            self.assign_constant_secondary(layouter, C::Secondary::identity())?;
             vp.pcs.num_chunks()
         ];
         let preprocess_comms = vp
@@ -929,7 +770,7 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             .map(|comm| {
                 comm.0
                     .iter()
-                    .map(|c| ecc_chip.assign_constant( *c))
+                    .map(|c| self.assign_constant_secondary(layouter, *c))
                     .try_collect::<_, Vec<_>, _>()
             })
             .try_collect::<_, Vec<_>, _>()?;
@@ -940,7 +781,7 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
                 comm.1
                      .0
                     .iter()
-                    .map(|c| ecc_chip.assign_constant( *c))
+                    .map(|c| self.assign_constant_secondary(layouter, *c))
                     .try_collect::<_, Vec<_>, _>()
             })
             .try_collect::<_, Vec<_>, _>()?;
@@ -954,11 +795,10 @@ impl <F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<F, CF, SF, GA>
             .collect_vec();
 
         let (comm, point, eval) =
-            self.multilinear_pcs_batch_verify(ctx, &comms, &points, &evals, transcript)?;
+            self.multilinear_pcs_batch_verify(layouter, &comms, &points, &evals, transcript)?;
 
-        self.verify_gemini(ctx, &vp.pcs, &comm, &point, &eval, transcript)?;
+        self.verify_hyrax(layouter, &vp.pcs, &comm, &point, &eval, transcript)?;
 
-        Ok(())
+        Ok(instances.into_iter().next().unwrap())
     }
-
 }

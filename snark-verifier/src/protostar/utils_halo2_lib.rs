@@ -284,17 +284,16 @@ use snark_verifier::util::arithmetic::fe_from_limbs;
 //     }
 // }
 
-// #[allow(clippy::type_complexity)]
-// #[derive(Clone, Debug)]
-// pub struct Chip<C: CurveAffine> {
-//     rns: Rns<C::Base, C::Scalar, NUM_LIMBS, NUM_LIMB_BITS, NUM_SUBLIMBS>,
-//     pub main_gate: MainGate<C::Scalar, NUM_LOOKUPS>,
-//     pub collector: Rc<RefCell<Collector<C::Scalar>>>,
-//     pub cell_map: Rc<RefCell<BTreeMap<u32, AssignedCell<C::Scalar, C::Scalar>>>>,
-//     pub instance: Column<Instance>,
-//     poseidon_spec: Spec<C::Scalar, T, RATE>,
-//     _marker: PhantomData<C>,
-// }
+#[allow(clippy::type_complexity)]
+#[derive(Clone, Debug)]
+pub struct Chip<C: CurveAffine> {
+    rns: Rns<C::Base, C::Scalar, NUM_LIMBS, NUM_LIMB_BITS, NUM_SUBLIMBS>,
+    pub main_gate: MainGate<C::Scalar, NUM_LOOKUPS>,
+    pub collector: Rc<RefCell<Collector<C::Scalar>>>,
+    pub instance: Column<Instance>,
+    poseidon_spec: Spec<C::Scalar, T, RATE>,
+    _marker: PhantomData<C>,
+}
 
 // impl<C: TwoChainCurve> Chip<C> {
 //     #[allow(clippy::type_complexity)]
@@ -400,16 +399,10 @@ use snark_verifier::util::arithmetic::fe_from_limbs;
 //     }
 // }
 
-// #[derive(Clone)]
-// pub struct AssignedBase<F: PrimeField, N: PrimeField> {
-//     scalar: Integer<F, N, NUM_LIMBS, NUM_LIMB_BITS>,
-//     limbs: Vec<Witness<N>>,
-// }
-
 #[derive(Clone)]
 pub struct AssignedBase<F: PrimeField, N: PrimeField> {
     scalar: ProperCrtUint<F>,
-    limbs: Vec<Witness<F>>,
+    limbs: Vec<AssignedValue<F>>,
 }
 
 impl<F: PrimeField, N: PrimeField> AssignedBase<F, N> {
@@ -431,89 +424,12 @@ impl<F: PrimeField, N: PrimeField> Debug for AssignedBase<F, N> {
     }
 }
 
-// #[derive(Clone)]
-// pub struct AssignedEcPoint<C: CurveAffine> {
-//     ec_point: Value<C>,
-//     x: Witness<C::Base>,
-//     y: Witness<C::Base>,
-//     is_identity: Witness<C::Base>,
-// }
-
-// impl<C: CurveAffine> AssignedEcPoint<C> {
-//     pub fn x(&self) -> &Witness<C::Base> {
-//         &self.x
-//     }
-
-//     pub fn y(&self) -> &Witness<C::Base> {
-//         &self.y
-//     }
-
-//     pub fn is_identity(&self) -> &Witness<C::Base> {
-//         &self.is_identity
-//     }
-
-//     fn assigned_cells(&self) -> impl Iterator<Item = &Witness<C::Base>> {
-//         [self.x(), self.y(), self.is_identity()].into_iter()
-//     }
-// }
-
-// impl<C: CurveAffine> Debug for AssignedEcPoint<C> {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         let mut s = f.debug_struct("AssignedEcPoint");
-//         let mut value = None;
-//         self.ec_point.map(|ec_point| value = Some(ec_point));
-//         if let Some(value) = value {
-//             s.field("ec_point", &value).finish()
-//         } else {
-//             s.finish()
-//         }
-//     }
-// }
-
-
-
-
-// fn to_assigned(
-//     &self,
-//     _: &mut impl Layouter<C::Scalar>,
-//     value: &AssignedCell<C::Scalar, C::Scalar>,
-// ) -> Result<Self::Assigned, Error> {
-//     Ok(self.collector.borrow_mut().new_external(value))
-// }
-
-// fn constrain_instance(
-//     &self,
-//     layouter: &mut impl Layouter<C::Scalar>,
-//     assigned: &Self::Assigned,
-//     row: usize,
-// ) -> Result<(), Error> {
-//     let cell = match row {
-//         0 => {
-//             *self.cell_map.borrow_mut() =
-//                 self.main_gate.layout(layouter, &self.collector.borrow())?;
-//             self.cell_map.borrow()[&assigned.id()].cell()
-//         }
-//         1 => {
-//             *self.collector.borrow_mut() = Default::default();
-//             let cell_map = std::mem::take(self.cell_map.borrow_mut().deref_mut());
-//             cell_map[&assigned.id()].cell()
-//         }
-//         _ => unreachable!(),
-//     };
-
-//     layouter.constrain_instance(cell, self.instance, row)?;
-
-//     Ok(())
-// }
-
-
 // todo implement some fp chip here
 // impl<C: TwoChainCurve> TwoChainCurveInstruction<C> for Chip<C> {
 //     type Config = Config<C::Scalar>;
-//     type Assigned = Witness<C::Scalar>;
+//     type Assigned = AssignedValue<F>;
 //     type AssignedBase = AssignedBase<C::Base, C::Scalar>;
-//     type AssignedPrimary = Vec<Witness<C::Scalar>>;
-//     type AssignedSecondary = AssignedEcPoint<C::Secondary>;
+//     type AssignedSecondary = EcPoint<F: PrimeField, FieldPoint>;
 
 //     fn new(config: Self::Config) -> Self {
 //         Chip {
@@ -527,15 +443,17 @@ impl<F: PrimeField, N: PrimeField> Debug for AssignedBase<F, N> {
 //         }
 //     }
 
+// }
 // todo figure out Layouter<C::Scalar> needed?
 
-struct Chip<F>
+struct Chip<F>{
+
+}
 
 impl<F:ScalarField> Chip<F> {
 
     fn constrain_equal(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         lhs: AssignedValue<F>,
         rhs: AssignedValue<F>,
@@ -545,26 +463,14 @@ impl<F:ScalarField> Chip<F> {
 
     fn assign_constant(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         constant: F,
     ) -> Result<(), Error> {
         Ok(ctx.load_constant(constant))
     }
 
-    // fn assign_witness(
-    //     &self,
-    //     _: &mut impl Layouter<C::Scalar>,
-    //     witness: Value<C::Scalar>,
-    // ) -> Result<Self::Assigned, Error> {
-    //     let collector = &mut self.collector.borrow_mut();
-    //     let value = collector.new_witness(witness);
-    //     Ok(collector.add_constant(&value, C::Scalar::ZERO))
-    // }
-
     fn assign_witness(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         witness: F,
     ) -> Result<(), Error> {
@@ -584,7 +490,6 @@ impl<F:ScalarField> Chip<F> {
 
     fn select(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         condition: AssignedValue<F>,
         when_true: AssignedValue<F>,
@@ -606,7 +511,6 @@ impl<F:ScalarField> Chip<F> {
 
     fn is_equal(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         lhs: AssignedValue<F>,
         rhs: AssignedValue<F>,
@@ -628,7 +532,6 @@ impl<F:ScalarField> Chip<F> {
 
     fn add(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         lhs: AssignedValue<F>,
         rhs: AssignedValue<F>,
@@ -639,7 +542,6 @@ impl<F:ScalarField> Chip<F> {
 
     fn sub(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         lhs: AssignedValue<F>,
         rhs: AssignedValue<F>,
@@ -650,7 +552,6 @@ impl<F:ScalarField> Chip<F> {
 
     fn mul(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         lhs: AssignedValue<F>,
         rhs: AssignedValue<F>,
@@ -662,7 +563,6 @@ impl<F:ScalarField> Chip<F> {
 
     fn constrain_equal_base(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
@@ -677,9 +577,10 @@ impl<F:ScalarField> Chip<F> {
         Ok(())
     }
 
+    // do we need reduced fieldpoint here
+    // propercrtunit act as a field point
     fn assign_constant_base(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         constant: Fq,
     ) -> Result<Self::AssignedBase, Error> {
@@ -689,15 +590,14 @@ impl<F:ScalarField> Chip<F> {
             ctx,
             constant,
         );
-        // fix this
-        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        let limbs = scalar.limbs().to_vec();
         Ok(AssignedBase { scalar, limbs })
     }
 
+    // check witness trait in plonkish has an id as a struc, might be useful for proof gen 
     // check if we need to do load reduced form -- does less than Fq ?
     fn assign_witness_base(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         witness: Fq,
     ) -> Result<Self::AssignedBase, Error> {
@@ -707,8 +607,7 @@ impl<F:ScalarField> Chip<F> {
             ctx,
             witness,
         );
-        // fix this
-        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        let limbs = scalar.limbs().to_vec();
         Ok(AssignedBase { scalar, limbs })
     }
 
@@ -722,10 +621,9 @@ impl<F:ScalarField> Chip<F> {
         value.scalar.value().assert_if_known(f)
     }
 
-    // todo fix this - cant import selct
+    // todo fix this - cant import select
     fn select_base(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         condition: Assigned<F>,
         when_true: &Self::AssignedBase,
@@ -742,14 +640,13 @@ impl<F:ScalarField> Chip<F> {
         condition,
     );
     // fix this
-    let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+    let limbs = scalar.limbs().to_vec();
     Ok(AssignedBase { scalar, limbs })
     }
 
     //todo fix this
     fn fit_base_in_scalar(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         value: &Self::AssignedBase,
     ) -> Result<Self::Assigned, Error> {
         Ok(integer_to_native(
@@ -763,7 +660,6 @@ impl<F:ScalarField> Chip<F> {
     //todo fix this
     fn to_repr_base(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         value: &Self::AssignedBase,
     ) -> Result<Vec<Self::Assigned>, Error> {
         Ok(value.limbs.clone())
@@ -771,7 +667,6 @@ impl<F:ScalarField> Chip<F> {
 
     fn add_base(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
@@ -783,14 +678,12 @@ impl<F:ScalarField> Chip<F> {
             lhs,
             rhs,
         ));
-        // fix this
-        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        let limbs = scalar.limbs().to_vec();
         Ok(AssignedBase { scalar, limbs })
     }
 
     fn sub_base(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
@@ -802,14 +695,12 @@ impl<F:ScalarField> Chip<F> {
             lhs,
             rhs,
         ));
-        // fix this
-        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        let limbs = scalar.limbs().to_vec();
         Ok(AssignedBase { scalar, limbs })
     }
 
     fn mul_base(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
@@ -823,14 +714,12 @@ impl<F:ScalarField> Chip<F> {
             a,
             b,
         ));
-        // fix this
-        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        let limbs = scalar.limbs().to_vec();
         Ok(AssignedBase { scalar, limbs })
     }
 
     fn div_base(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         ctx: &mut Context<F>,
         lhs: &Self::AssignedBase,
         rhs: &Self::AssignedBase,
@@ -842,26 +731,25 @@ impl<F:ScalarField> Chip<F> {
             lhs,
             rhs,
         );
-        // fix this
-        let limbs = scalar.limbs().iter().map(AsRef::as_ref).copied().collect();
+        let limbs = scalar.limbs().to_vec();
         Ok(AssignedBase { scalar, limbs })
     }
 
+    // use assignedecpoint from here - https://github.com/amit0365/snark-verifier-axiom/blob/d361782ca3ba689e951d30809869c9f03814e4cb/snark-verifier/src/loader/halo2/shim.rs#L246
     fn constrain_equal_secondary(
         &self,
-        layouter: &mut impl Layouter<C::Scalar>,
+        ctx: &mut Context<F>,
         lhs: &Self::AssignedSecondary,
         rhs: &Self::AssignedSecondary,
     ) -> Result<(), Error> {
-        self.constrain_equal(layouter, lhs.x(), rhs.x())?;
-        self.constrain_equal(layouter, lhs.y(), rhs.y())?;
-        self.constrain_equal(layouter, lhs.is_identity(), rhs.is_identity())?;
+        self.constrain_equal(ctx, lhs.x(), rhs.x())?;
+        self.constrain_equal(ctx, lhs.y(), rhs.y())?;
+        self.constrain_equal(ctx, lhs.is_identity(), rhs.is_identity())?;
         Ok(())
     }
 
     fn assign_constant_secondary(
         &self,
-        layouter: &mut impl Layouter<C::Scalar>,
         constant: C::Secondary,
     ) -> Result<Self::AssignedSecondary, Error> {
         let [x, y, is_identity] =
@@ -876,7 +764,6 @@ impl<F:ScalarField> Chip<F> {
 
     fn assign_witness_secondary(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         witness: Value<C::Secondary>,
     ) -> Result<Self::AssignedSecondary, Error> {
         let collector = &mut self.collector.borrow_mut();
@@ -1065,7 +952,6 @@ impl<C: CurveAffine, EccChip: EccInstructions<C>> Halo2Loader<C, EccChip> {
 
     fn to_assigned(
         &self,
-        _: &mut impl Layouter<C::Scalar>,
         value: &AssignedCell<C::Scalar, C::Scalar>,
     ) -> Result<Self::Assigned, Error> {
         Ok(self.collector.borrow_mut().new_external(value))

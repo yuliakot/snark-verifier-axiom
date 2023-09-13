@@ -1,4 +1,5 @@
-use halo2_base::halo2_proofs;
+use halo2_base::halo2_proofs::{self, halo2curves::bn256};
+use halo2_ecc::bn254;
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
     dev::MockProver,
@@ -28,150 +29,48 @@ use snark_verifier::{
 };
 use std::rc::Rc;
 
-//change the circuit to protostar verifier
-type PlonkVerifier = verifier::plonk::PlonkVerifier<KzgAs<Bn256, Gwc19>>;
 
 #[derive(Clone, Copy)]
-struct StandardPlonkConfig {
-    a: Column<Advice>,
-    b: Column<Advice>,
-    c: Column<Advice>,
-    q_a: Column<Fixed>,
-    q_b: Column<Fixed>,
-    q_c: Column<Fixed>,
-    q_ab: Column<Fixed>,
-    constant: Column<Fixed>,
-    #[allow(dead_code)]
-    instance: Column<Instance>,
+struct VerifierCircuit {
+    protostar_hyperplonk_proof: Vec<u8>,
 }
 
-impl StandardPlonkConfig {
-    fn configure(meta: &mut ConstraintSystem<Fr>) -> Self {
-        let [a, b, c] = [(); 3].map(|_| meta.advice_column());
-        let [q_a, q_b, q_c, q_ab, constant] = [(); 5].map(|_| meta.fixed_column());
-        let instance = meta.instance_column();
-
-        [a, b, c].map(|column| meta.enable_equality(column));
-
-        meta.create_gate(
-            "q_a·a + q_b·b + q_c·c + q_ab·a·b + constant + instance = 0",
-            |meta| {
-                let [a, b, c] = [a, b, c].map(|column| meta.query_advice(column, Rotation::cur()));
-                let [q_a, q_b, q_c, q_ab, constant] = [q_a, q_b, q_c, q_ab, constant]
-                    .map(|column| meta.query_fixed(column, Rotation::cur()));
-                let instance = meta.query_instance(instance, Rotation::cur());
-                Some(
-                    q_a * a.clone()
-                        + q_b * b.clone()
-                        + q_c * c
-                        + q_ab * a * b
-                        + constant
-                        + instance,
-                )
-            },
-        );
-
-        StandardPlonkConfig { a, b, c, q_a, q_b, q_c, q_ab, constant, instance }
-    }
-}
-
-#[derive(Clone, Default)]
-struct StandardPlonk(Fr);
-
-impl StandardPlonk {
-    fn rand<R: RngCore>(mut rng: R) -> Self {
-        Self(Fr::from(rng.next_u32() as u64))
-    }
-
-    fn num_instance() -> Vec<usize> {
-        vec![1]
-    }
-
-    fn instances(&self) -> Vec<Vec<Fr>> {
-        vec![vec![self.0]]
-    }
-}
-
-impl Circuit<Fr> for StandardPlonk {
-    type Config = StandardPlonkConfig;
+impl Circuit<bn256::Fr> for VerifierCircuit {
+    type Config = strawman::Config<bn256::Fr>;
     type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
-        Self::default()
+        self.clone()
     }
 
-    fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
-        meta.set_minimum_degree(4);
-        StandardPlonkConfig::configure(meta)
+    fn configure(meta: &mut ConstraintSystem<bn256::Fr>) -> Self::Config {
+        strawman::Config::configure::<bn256::G1Affine>(meta)
     }
 
     fn synthesize(
         &self,
         config: Self::Config,
-        mut layouter: impl Layouter<Fr>,
+        mut layouter: impl Layouter<bn256::Fr>,
     ) -> Result<(), Error> {
-        layouter.assign_region(
-            || "",
-            |mut region| {
-                #[cfg(feature = "halo2-pse")]
-                {
-                    region.assign_advice(|| "", config.a, 0, || Value::known(self.0))?;
-                    region.assign_fixed(|| "", config.q_a, 0, || Value::known(-Fr::one()))?;
+        let chip =
+            <strawman::Chip<bn256::G1Affine> as TwoChainCurveInstruction<bn256::G1Affine>>::new(
+                config,
+            );
 
-                    region.assign_advice(|| "", config.a, 1, || Value::known(-Fr::from(5u64)))?;
-                    for (idx, column) in (1..).zip([
-                        config.q_a,
-                        config.q_b,
-                        config.q_c,
-                        config.q_ab,
-                        config.constant,
-                    ]) {
-                        region.assign_fixed(
-                            || "",
-                            column,
-                            1,
-                            || Value::known(Fr::from(idx as u64)),
-                        )?;
-                    }
+            let mut transcript =
+            PoseidonTranscript::<Rc<Halo2Loader>, _>::new::<SECURE_MDS>(loader, as_proof);
+ 
+            Ok(chip.verify_hyrax_hyperplonk(
+                &mut layouter,
+                &self.secondary_aggregation_vp,
+                self.secondary_aggregation_instances
+                    .as_ref()
+                    .map(Vec::as_slice),
+                &mut transcript,
+            )?)
+        }
 
-                    let a = region.assign_advice(|| "", config.a, 2, || Value::known(Fr::one()))?;
-                    a.copy_advice(|| "", &mut region, config.b, 3)?;
-                    a.copy_advice(|| "", &mut region, config.c, 4)?;
-                }
-                #[cfg(feature = "halo2-axiom")]
-                {
-                    region.assign_advice(config.a, 0, Value::known(Assigned::Trivial(self.0)));
-                    region.assign_fixed(config.q_a, 0, Assigned::Trivial(-Fr::one()));
-
-                    region.assign_advice(
-                        config.a,
-                        1,
-                        Value::known(Assigned::Trivial(-Fr::from(5u64))),
-                    );
-                    for (idx, column) in (1..).zip([
-                        config.q_a,
-                        config.q_b,
-                        config.q_c,
-                        config.q_ab,
-                        config.constant,
-                    ]) {
-                        region.assign_fixed(column, 1, Assigned::Trivial(Fr::from(idx as u64)));
-                    }
-
-                    let a = region.assign_advice(
-                        config.a,
-                        2,
-                        Value::known(Assigned::Trivial(Fr::one())),
-                    );
-                    a.copy_advice(&mut region, config.b, 3);
-                    a.copy_advice(&mut region, config.c, 4);
-                }
-                Ok(())
-            },
-        )
-    }
 }
-
 fn gen_srs(k: u32) -> ParamsKZG<Bn256> {
     ParamsKZG::<Bn256>::setup(k, OsRng)
 }
