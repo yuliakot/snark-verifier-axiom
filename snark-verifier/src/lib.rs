@@ -1,5 +1,4 @@
 //! Generic (S)NARK verifier.
-
 #![allow(clippy::type_complexity, clippy::too_many_arguments, clippy::upper_case_acronyms)]
 #![deny(missing_debug_implementations, missing_docs, unsafe_code, rustdoc::all)]
 

@@ -114,6 +114,10 @@ impl Rotation {
     pub fn next() -> Self {
         Rotation(1)
     }
+
+    pub fn distance(&self) -> usize {
+        self.0.unsigned_abs() as usize
+    }
 }
 
 impl From<i32> for Rotation {
@@ -499,5 +503,5 @@ pub fn horner<F: Field>(coeffs: &[F], x: &F) -> F {
     coeffs
         .iter()
         .rev()
-        .fold(F::ZERO, |acc, coeff| acc * x + coeff)
+        .fold(F::zero(), |acc, coeff| acc * x + coeff)
 }

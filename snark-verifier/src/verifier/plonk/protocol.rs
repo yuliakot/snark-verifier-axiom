@@ -195,7 +195,7 @@ where
     zn_minus_one_inv: Fraction<L::LoadedScalar>,
     identity: L::LoadedScalar,
     lagrange: BTreeMap<i32, Fraction<L::LoadedScalar>>,
-    eq_xy: L::LoadedScalar,
+    //eq_xy: L::LoadedScalar,
 }
 
 impl<C, L> CommonPolynomialEvaluation<C, L>
@@ -228,7 +228,7 @@ where
             .map(|omega| Fraction::new(numer.clone() * omega, z.clone() - omega))
             .collect_vec();
         // todo fix this
-        let eq_xy_eval: F::one();
+        //let eq_xy_eval: F::one();
         
         Self {
             zn,
@@ -236,7 +236,7 @@ where
             zn_minus_one_inv,
             identity: z.clone(),
             lagrange: langranges.into_iter().zip(lagrange_evals).collect(),
-            eq_xy,
+            //eq_xy,
         }
     }
 
@@ -257,7 +257,7 @@ where
             CommonPolynomial::Identity => &self.identity,
             CommonPolynomial::Lagrange(i) => self.lagrange.get(&i).unwrap().evaluated(),
             // todo fix eqxy
-            CommonPolynomial::EqXY(idx) => self.eq_xy.get(&idx).unwrap().evaluated(),
+            //CommonPolynomial::EqXY(idx) => self.eq_xy.get(&idx).unwrap().evaluated(),
         }
     }
 
