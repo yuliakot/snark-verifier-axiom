@@ -1,67 +1,74 @@
-use crate::{
-    system::halo2::{self,compile, transcript::{evm::EvmTranscript, halo2::ChallengeScalar}, Config},
-    loader::{evm::{self, encode_calldata, Address, EvmLoader, ExecutorBuilder}},//halo2},
-    pcs::kzg::{Gwc19, KzgAs},
-    verifier::{plonk::protocol::{Query,Expression,CommonPolynomial}, SnarkVerifier},
-    pcs::{
-        // todo fix yulia
-        // multilinear::{
-        //     Gemini, MultilinearHyrax, MultilinearHyraxParams, MultilinearIpa, MultilinearIpaParams,
-        // },
-        Evaluation,
-    },
-    poly::multilinear::{
-        rotation_eval_coeff_pattern, rotation_eval_point_pattern, zip_self, MultilinearPolynomial,
-    },
-    loader::{native::NativeLoader, Loader},
-    util::{
-        arithmetic::{
-            fe_to_fe, powers, Rotation, 
-            BooleanHypercube, MultiMillerLoop, PrimeCurveAffine, //PrimeField, //Field
-        },
-        chain,
-        //expression::{CommonPolynomial},
-        hash,
-        izip, izip_eq,
-        //figure out compat and inmemory transcript 
-        transcript::{Transcript,TranscriptRead, TranscriptWrite}, //InMemoryTranscript
-        BitIndex, DeserializeOwned, Itertools, Serialize,
-    },
-};
-use rand::RngCore;
 use std::{
     borrow::{Borrow, BorrowMut, Cow},
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    env::set_var,
     fmt::Debug,
+    fs::File,
     hash::Hash,
+    io::Cursor,
     iter,
     marker::PhantomData,
+    rc::Rc,
 };
-use halo2_base::{halo2_proofs::{plonk::Error, transcript::EncodedChallenge},gates::flex_gate::{GateChip, GateInstructions}, utils::{ScalarField,CurveAffineExt}, AssignedValue, Context::{self}, QuantumCell::{self, Constant, Existing, Witness, WitnessFraction},
+
+use rand::RngCore;
+
+use halo2_base::{
+    gates::flex_gate::{GateChip, GateInstructions},
+    utils::{CurveAffineExt, ScalarField},
+    halo2_proofs,
+    AssignedValue,
+    Context,
+    QuantumCell::{Constant, Existing, Witness, WitnessFraction},
 };
-//use halo2_proofs::plonk::Error; //, transcript::{Transcript,TranscriptRead,Challenge255}};//,{circuit::Value,plonk::{
-//     create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Assigned, Circuit, Column,
-//     ConstraintSystem, Error, Fixed, Instance, ProvingKey, VerifyingKey,
-//     },
-// halo2curves::{
-//     bn256::{Bn256, Fr, G1Affine},
-//     group::ff::Field,
-//     FieldExt,
-//     }
-// }};
-use halo2_ecc::{fields::{fp::FpChip, FieldChip, PrimeField}, bigint::{ProperCrtUint,FixedCRTInteger,CRTInteger}};
+
+use halo2_proofs::{
+    plonk::{
+        Advice, Assigned, Circuit, Column, ConstraintSystem, create_proof, Error,
+        Fixed, Instance, keygen_pk, keygen_vk, ProvingKey, VerifyingKey, verify_proof,
+    },
+    circuit::Value,
+    halo2curves::{
+        bn256::{Bn256, Fr, G1Affine},
+        //group::ff::Field,
+        FieldExt,
+    },
+};
+
+use halo2_ecc::{
+    fields::{fp::FpChip, FieldChip, PrimeField},
+    bigint::{CRTInteger, FixedCRTInteger, ProperCrtUint},
+};
+
+use crate::{
+    system::halo2::{compile, transcript::{evm::EvmTranscript, halo2::PoseidonTranscript}, Config},
+    loader::{evm::{encode_calldata, Address, EvmLoader, ExecutorBuilder}, halo2, native::NativeLoader, Loader},
+    pcs::{Evaluation, kzg::{Gwc19, KzgAs}},
+    verifier::{plonk::protocol::{CommonPolynomial, Expression, Query}, SnarkVerifier},
+    poly::multilinear::{
+        MultilinearPolynomial, rotation_eval_coeff_pattern, rotation_eval_point_pattern, zip_self,
+    },
+    util::{
+        arithmetic::{BooleanHypercube, fe_to_fe, powers, Rotation},
+        chain, hash, izip, izip_eq,
+        transcript::{Transcript, TranscriptRead, TranscriptWrite},
+        BitIndex, DeserializeOwned, Itertools, Serialize,
+    },
+};
+
 
 const LIMBS: usize = 3;
 const BITS: usize = 88;
-//const T: usize = 3;
+const T: usize = 3;
 const RATE: usize = 2;
 const R_F: usize = 8;
 const R_P: usize = 57;
 const SECURE_MDS: usize = 0;
 
 // type Poseidon<L> = hash::Poseidon<Fr, L, T, RATE>;
-// type PoseidonTranscript<L, S> =
-//      halo2::transcript::halo2::PoseidonTranscript<G1Affine, L, S, T, RATE, R_F, R_P>;
+// type BaseFieldEccChip<'chip> = halo2_ecc::ecc::BaseFieldEccChip<'chip, G1Affine>;
+// type Halo2Loader<'chip> = halo2::Halo2Loader<G1Affine, BaseFieldEccChip<'chip>>;
+//type PoseidonTranscript<L, S> = PoseidonTranscript<G1Affine, L, S, T, RATE, R_F, R_P>;
 
 // check overflow for add/sub_no_carry specially for sum. have done mul with carry everywhere
 pub struct Chip<'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA>
@@ -215,24 +222,29 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         x: ProperCrtUint<F>,
     ) -> (ProperCrtUint<F>, ProperCrtUint<F>) {
         assert!(!coords.is_empty(), "coords should not be empty");
-        let mut z = (self.base_chip.sub_no_carry(ctx, x, coords[0].0));
+        let mut z = self.base_chip.sub_no_carry(ctx, x, coords[0].0);
         for coord in coords.iter().skip(1) {
-            let sub = (self.base_chip.sub_no_carry(ctx, x, coord.0));
+            let sub = self.base_chip.sub_no_carry(ctx, x, coord.0);
             z = self.base_chip.mul(ctx, z, sub).into();
         }
         let mut eval = None;
         for i in 0..coords.len() {
             // compute (x - x_i) * Prod_{j != i} (x_i - x_j)
-            let mut denom = (self.base_chip.sub_no_carry(ctx, x, coords[i].0));
+            let mut denom = self.base_chip.sub_no_carry(ctx, x, coords[i].0);
             for j in 0..coords.len() {
                 if i == j {
                     continue;
                 }
-                let sub = (self.base_chip.sub_no_carry(ctx, coords[i].0, coords[j].0));
+                let sub = self.base_chip.sub_no_carry(ctx, coords[i].0, coords[j].0);
                 let denom = self.base_chip.mul(ctx, denom, sub);
             }
+            let denom = FixedCRTInteger::from_native(denom.value.to_biguint().unwrap(), 
+            self.base_chip.num_limbs, self.base_chip.limb_bits).assign(
+            ctx,
+            self.base_chip.limb_bits,
+            self.base_chip.native_modulus());
 
-            let is_zero = self.base_chip.is_zero(ctx, <CRTInteger<F> as Into<T>>::into(denom));
+            let is_zero = self.base_chip.is_zero(ctx, denom);
             // todo check this - primefield doesn't have zero
             self.base_chip.gate().assert_is_const(ctx, &is_zero, &F::zero());
 
@@ -373,7 +385,13 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
                                 }
                                 let diff = self.base_chip.sub_no_carry(ctx, eval_1, eval_0);
                                 let diff_x_i = self.base_chip.mul(ctx, &diff, x_i);
-                                (self.base_chip.add_no_carry(ctx, &diff_x_i, eval_0))
+                                
+                                Ok(FixedCRTInteger::from_native(self.base_chip.add_no_carry(ctx, &diff_x_i, eval_0).value.to_biguint().unwrap(), 
+                                self.base_chip.num_limbs, self.base_chip.limb_bits).assign(
+                                ctx,
+                                self.base_chip.limb_bits,
+                                self.base_chip.native_modulus()))
+
                             })
                             .try_collect::<_, Vec<_>, _>()
                             .map(Into::into)
@@ -425,9 +443,13 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
                 let two_xy = self.base_chip.add_no_carry(ctx, &xy, &xy);
                 let two_xy_plus_one = self.base_chip.add_no_carry(ctx, &two_xy, &one);
                 let x_plus_y = self.base_chip.add_no_carry(ctx, x, y);
-                (self.base_chip.sub_no_carry(ctx, &two_xy_plus_one, &x_plus_y))
+                Ok(FixedCRTInteger::from_native(self.base_chip.sub_no_carry(ctx, &two_xy_plus_one, &x_plus_y).value.to_biguint().unwrap(), 
+                                self.base_chip.num_limbs, self.base_chip.limb_bits).assign(
+                                ctx,
+                                self.base_chip.limb_bits,
+                                self.base_chip.native_modulus()))
             })
-            .try_collect::<_, Vec<_>, _>()?;
+            .try_collect::<_,Vec<ProperCrtUint<F>>,_>()?;
         self.product(ctx, &terms)
     }
 
@@ -508,47 +530,47 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         num_vars: usize,
         degree: usize,
         sum: &ProperCrtUint<F>,
-        transcript: &mut T // impl TranscriptInstruction<F, TccChip = Self>,
+        //transcript: &mut T // impl TranscriptInstruction<F, TccChip = Self>,
     ) -> Result<(ProperCrtUint<F>, Vec<ProperCrtUint<F>>), Error> 
     // fix add loader here
-    where T: TranscriptRead<GA>
+    // where T: TranscriptRead<GA>
     {
         let points = iter::successors(Some(GA::Base::zero()), move |state| Some(GA::Base::one() + state)).take(degree + 1).collect_vec();
         let points = points
         .into_iter()
-        .map(|point| Ok(self.base_chip.load_private(ctx, point)))
+        .map(|point| (self.base_chip.load_private(ctx, point)))
         .try_collect::<_, Vec<_>, _>()?;
 
         let mut sum = Cow::Borrowed(sum);
         let mut x = Vec::with_capacity(num_vars);
-        
-        for _ in 0..num_vars {
-            let msg = transcript.read_n_scalars(degree + 1);
-            x.push(transcript.squeeze_challenge().as_ref().clone());
+        //let mut transcript = PoseidonTranscript::<NativeLoader, _>; 
+        // for _ in 0..num_vars{
+        //     let msg = transcript.read_n_scalars(degree + 1);
+        //     x.push(transcript.squeeze_challenge().as_ref().clone());
 
-            let sum_from_evals = if IS_MSG_EVALS {
-                self.base_chip.add_no_carry(ctx, &msg[0], &msg[1])
-            } else {
-                self.sum(ctx, chain![[&msg[0], &msg[0]], &msg[1..]])
-            };
-            self.base_chip.assert_equal( ctx, &*sum, &sum_from_evals);
+        //     let sum_from_evals = if IS_MSG_EVALS {
+        //         self.base_chip.add_no_carry(ctx, &msg[0], &msg[1])
+        //     } else {
+        //         self.sum(ctx, chain![[&msg[0], &msg[0]], &msg[1..]])
+        //     };
+        //     self.base_chip.assert_equal( ctx, &*sum, &sum_from_evals);
 
-            let coords = points
-            .iter()
-            .cloned()
-            .zip(msg.iter().cloned())
-            .collect();
+        //     let coords = points
+        //     .iter()
+        //     .cloned()
+        //     .zip(msg.iter().cloned())
+        //     .collect();
 
-            if IS_MSG_EVALS {
-                sum = Cow::Owned(self.lagrange_and_eval(
-                    ctx,
-                    &coords,
-                    x.last().unwrap(),
-                ));
-            } else {
-                sum = Cow::Owned(self.hornor(ctx, &msg, x.last().unwrap())?);
-            };
-        }
+        //     if IS_MSG_EVALS {
+        //         sum = Cow::Owned(self.lagrange_and_eval(
+        //             ctx,
+        //             &coords,
+        //             x.last().unwrap(),
+        //         ));
+        //     } else {
+        //         sum = Cow::Owned(self.hornor(ctx, &msg, x.last().unwrap())?);
+        //     };
+        // }
 
         Ok((sum.into_owned(), x))
     }
