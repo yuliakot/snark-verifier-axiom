@@ -181,7 +181,7 @@ mod halo2 {
 pub enum CommonPolynomial {
     Identity,
     Lagrange(i32),
-    EqXY(usize),
+    //EqXY(usize),
 }
 
 #[derive(Clone, Debug)]

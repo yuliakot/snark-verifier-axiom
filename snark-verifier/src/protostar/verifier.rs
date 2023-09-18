@@ -71,6 +71,7 @@ const SECURE_MDS: usize = 0;
 //type PoseidonTranscript<L, S> = PoseidonTranscript<G1Affine, L, S, T, RATE, R_F, R_P>;
 
 // check overflow for add/sub_no_carry specially for sum. have done mul with carry everywhere
+#[derive(Debug)]
 pub struct Chip<'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA>
 where
     GA: CurveAffineExt<Base = CF, ScalarExt = SF>,
@@ -87,13 +88,9 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
     GA: CurveAffineExt<Base = CF, ScalarExt = SF>,
     //T: TranscriptRead<GA, Loader<GA>>,
     //L: Loader<GA>,
-{
+{   
+    // convert crt to fixedcrt
     // https://github.com/axiom-crypto/halo2-lib/blob/f2eacb1f7fdbb760213cf8037a1bd1a10672133f/halo2-ecc/src/fields/fp.rs#L127
-    // FixedCRTInteger::from_native(a, self.num_limbs, self.limb_bits).assign(
-    //     ctx,
-    //     self.limb_bits,
-    //     self.native_modulus(),
-    // )
 
     fn powers(
         &self,
@@ -120,55 +117,20 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         })
     }
 
-    // change inner_product impl
     fn inner_product<'a, 'b>(
         &self,
         ctx: &mut Context<F>,
         a: impl IntoIterator<Item = &'a ProperCrtUint<F>>,
         b: impl IntoIterator<Item = &'b ProperCrtUint<F>>,
     ) -> Result<ProperCrtUint<F>, Error> {
-        self.inner_product_simple(ctx, a, b);
-        Ok(ctx.last().unwrap())
-    }
-
-    fn inner_product_simple<'a, 'b>(
-        &self,
-        ctx: &mut Context<F>,
-        a: impl IntoIterator<Item = &'a ProperCrtUint<F>>,
-        b: impl IntoIterator<Item = &'b ProperCrtUint<F>>,
-    ) -> Result<bool, Error> {
         
-        let mut sum;
         let mut a = a.into_iter();
-        let mut b = b.into_iter().peekable();
-        // fix this by selecting if co == &GA::Base::one()
-        let co = self.base_chip.load_constant(ctx, c);
-        let b_starts_with_one = matches!(b.peek(), Some(co));
-        let cells = if b_starts_with_one {
-            b.next();
-            let start_a = a.next().unwrap().into();
-            sum = *start_a.value();
-            iter::once(start_a)
-        } else {
-            sum = GA::Base::zero();
-            iter::once(self.base_chip.load_constant(ctx, GA::Base::zero()))
-        }
-        .chain(a.zip(b).flat_map(|(a, b)| {
-            let a = a.into();
-            sum += *a.value() * b.value();
-            [a, b, self.base_chip.load_private(ctx, sum)]
-        }));
+        let mut b = b.into_iter();        
+        let values = a.zip(b).map(|(a, b)| {
+            self.base_chip.mul(ctx, a, b)
+        }).collect::<Vec<_>>();
 
-        if ctx.witness_gen_only() {
-            ctx.assign_region(cells, vec![]);
-        } else {
-            let cells = cells.collect::<Vec<_>>();
-            let lo = cells.len();
-            let len = lo / 3;
-            ctx.assign_region(cells, (0..len).map(|i| 3 * i as isize));
-        };
-
-        Ok(b_starts_with_one)
+        self.sum(ctx, &values)
     }
 
     fn sum<'a>(
@@ -205,7 +167,7 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         ))
     }
 
-    fn hornor(
+    fn horner(
         &self,
         ctx: &mut Context<F>,
         coeffs: &[ProperCrtUint<F>],
@@ -222,34 +184,34 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         x: ProperCrtUint<F>,
     ) -> (ProperCrtUint<F>, ProperCrtUint<F>) {
         assert!(!coords.is_empty(), "coords should not be empty");
-        let mut z = self.base_chip.sub_no_carry(ctx, x, coords[0].0);
+        let mut z = self.base_chip.sub_no_carry(ctx, x.clone(), coords[0].0.clone());
         for coord in coords.iter().skip(1) {
-            let sub = self.base_chip.sub_no_carry(ctx, x, coord.0);
+            let sub = self.base_chip.sub_no_carry(ctx, x.clone(), coord.0.clone());
             z = self.base_chip.mul(ctx, z, sub).into();
         }
         let mut eval = None;
         for i in 0..coords.len() {
             // compute (x - x_i) * Prod_{j != i} (x_i - x_j)
-            let mut denom = self.base_chip.sub_no_carry(ctx, x, coords[i].0);
+            let mut denom = self.base_chip.sub_no_carry(ctx, x.clone(), coords[i].0.clone());
             for j in 0..coords.len() {
                 if i == j {
                     continue;
                 }
-                let sub = self.base_chip.sub_no_carry(ctx, coords[i].0, coords[j].0);
-                let denom = self.base_chip.mul(ctx, denom, sub);
+                let sub = self.base_chip.sub_no_carry(ctx, coords[i].0.clone(), coords[j].0.clone());
+                let denom = self.base_chip.mul(ctx, denom.clone(), sub.clone());
             }
-            let denom = FixedCRTInteger::from_native(denom.value.to_biguint().unwrap(), 
+            let denom = FixedCRTInteger::from_native(denom.clone().value.to_biguint().unwrap(), 
             self.base_chip.num_limbs, self.base_chip.limb_bits).assign(
             ctx,
             self.base_chip.limb_bits,
             self.base_chip.native_modulus());
 
-            let is_zero = self.base_chip.is_zero(ctx, denom);
+            let is_zero = self.base_chip.is_zero(ctx, denom.clone());
             // todo check this - primefield doesn't have zero
             self.base_chip.gate().assert_is_const(ctx, &is_zero, &F::zero());
 
             // y_i / denom
-            let quot = self.base_chip.divide_unsafe(ctx, coords[i].1, denom);
+            let quot = self.base_chip.divide_unsafe(ctx, coords[i].1.clone(), denom.clone());
             eval = if let Some(eval) = eval {
                 let eval = self.base_chip.add_no_carry(ctx, eval, quot);
                 Some(FixedCRTInteger::from_native(eval.value.to_biguint().unwrap(), 
@@ -261,8 +223,8 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
                 Some(quot)
             };
         }
-        let out = self.base_chip.mul(ctx, eval.unwrap(), z);
-        let z = FixedCRTInteger::from_native(z.value.to_biguint().unwrap(), 
+        let out = self.base_chip.mul(ctx, eval.unwrap(), z.clone());
+        let z = FixedCRTInteger::from_native(z.clone().value.to_biguint().unwrap(), 
                 self.base_chip.num_limbs, self.base_chip.limb_bits).assign(
                 ctx,
                 self.base_chip.limb_bits,
@@ -413,7 +375,7 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
                 .iter()
                 .map(|eval| {
                     let hi = self.base_chip.mul(ctx, eval, y_i);
-                    let lo = (self.base_chip.sub_no_carry(ctx, eval, &hi));
+                    let lo = self.base_chip.sub_no_carry(ctx, eval, &hi);
                     let lo = FixedCRTInteger::from_native(lo.value.to_biguint().unwrap(), 
                     self.base_chip.num_limbs, self.base_chip.limb_bits).assign(
                     ctx,
@@ -569,7 +531,7 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         //             x.last().unwrap(),
         //         ));
         //     } else {
-        //         sum = Cow::Owned(self.hornor(ctx, &msg, x.last().unwrap())?);
+        //         sum = Cow::Owned(self.horner(ctx, &msg, x.last().unwrap())?);
         //     };
         // }
 
