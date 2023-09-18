@@ -449,7 +449,7 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
                                 self.base_chip.limb_bits,
                                 self.base_chip.native_modulus()))
             })
-            .try_collect::<_,Vec<ProperCrtUint<F>>,_>()?;
+            .try_collect::<_, Vec<_>, Error>()?;
         self.product(ctx, &terms)
     }
 
@@ -538,8 +538,9 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         let points = iter::successors(Some(GA::Base::zero()), move |state| Some(GA::Base::one() + state)).take(degree + 1).collect_vec();
         let points = points
         .into_iter()
-        .map(|point| (self.base_chip.load_private(ctx, point)))
-        .try_collect::<_, Vec<_>, _>()?;
+        .map(|point| 
+            Ok(self.base_chip.load_private(ctx, point)))
+            .try_collect::<_, Vec<_>, Error>()?;
 
         let mut sum = Cow::Borrowed(sum);
         let mut x = Vec::with_capacity(num_vars);
