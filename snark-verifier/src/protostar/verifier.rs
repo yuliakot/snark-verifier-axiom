@@ -71,7 +71,7 @@ const SECURE_MDS: usize = 0;
 //type PoseidonTranscript<L, S> = PoseidonTranscript<G1Affine, L, S, T, RATE, R_F, R_P>;
 
 // check overflow for add/sub_no_carry specially for sum. have done mul with carry everywhere
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Chip<'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA, L>
 where
     GA: CurveAffineExt<Base = CF, ScalarExt = SF>,
@@ -79,7 +79,7 @@ where
     L: Loader<GA>
 {
     pub base_chip: FpChip<'range, F, CF>,  
-    _phantom: PhantomData<(SF, GA, L)>,
+    _marker: PhantomData<(SF, GA, L)>,
     //pub scalar_chip: FpChip<'range, F, SF>, 
 }
 
@@ -89,8 +89,15 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA, L> Chip<'range,
     //T: TranscriptRead<GA, Loader<GA>>,
     L: Loader<GA>,
 {   
-    // convert crt to fixedcrt
+    // convert crt to properuint
     // https://github.com/axiom-crypto/halo2-lib/blob/f2eacb1f7fdbb760213cf8037a1bd1a10672133f/halo2-ecc/src/fields/fp.rs#L127
+
+    pub fn new(field_chip: FpChip<'range, F, CF>) -> Self {
+        Self {
+            base_chip: field_chip,
+            _marker: PhantomData,
+        }
+    }
 
     fn powers(
         &self,
@@ -116,6 +123,7 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA, L> Chip<'range,
             }
         })
     }
+
 
     fn inner_product<'a, 'b>(
         &self,
@@ -1015,3 +1023,307 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA, L> Chip<'range,
     // }
 
 }
+
+#[cfg(test)]
+mod test {
+// External crates
+// use ark_std::{end_timer, start_timer};
+// use rand::random;
+// use rand_core::OsRng;
+// use std::fs::File;
+// use test_case::test_case;
+
+use halo2_base::halo2_proofs::{
+    arithmetic::CurveAffine,
+    dev::MockProver,
+    halo2curves::bn256::Fr,
+};
+use halo2_base::gates::{
+    builder::{
+        CircuitBuilderStage, GateThreadBuilder, MultiPhaseThreadBreakPoints, RangeCircuitBuilder,
+    },
+    RangeChip,
+};
+use halo2_base::utils::{biguint_to_fe, fe_to_biguint, modulus, CurveAffineExt, ScalarField};
+use halo2_base::Context;
+use halo2_ecc::fields::{fp::FpChip, FieldChip, PrimeField};
+
+// Current crate and module
+use crate::loader::{
+    evm::{encode_calldata, Address, EvmLoader, ExecutorBuilder},
+    halo2,
+    native::NativeLoader,
+    Loader,
+};
+
+// Current module
+use super::Chip;
+
+
+#[test_case(&[0, 1, 2].map(Fr::from) => (Fr::one(), Fr::from(2)) ; "lagrange_eval(): constant fn")]
+pub fn test_lagrange_eval<F: PrimeField, CF: PrimeField, SF: PrimeField, GA:CurveAffineExt<Base = CF, ScalarExt = SF>, L:Loader<GA>>(input: &[F]) -> (F, F) {
+    let mut builder = GateThreadBuilder::mock();
+    let ctx = builder.main(0);
+    let input = ctx.assign_witnesses(input.iter().copied());
+    std::env::set_var("LOOKUP_BITS", params.lookup_bits.to_string());
+    let range = RangeChip::<F>::default(params.lookup_bits);
+    let fp_chip = FpChip::<F,CF>::new(&range, params.limb_bits, params.num_limbs);
+    let chip = Chip::<F,CF,SF,GA,L>::new(&fp_chip);
+    let a = chip.lagrange_and_eval(ctx, &[(input[0], input[1])], input[2]);
+    (*a.0.value(), *a.1.value())
+}
+
+pub fn lagrange_and_eval_test<F, CF, SF, GA, L>(
+    ctx: &mut Context<F>,
+    params: CircuitParams,
+)
+where
+    F: PrimeField,
+    CF: PrimeField,
+    SF: PrimeField,
+    GA: CurveAffineExt<Base = CF, ScalarExt = SF>,
+    L: Loader<GA>,
+ {
+    // always use this to define `lookup_bits`
+    let lookup_bits =
+    var("LOOKUP_BITS").unwrap_or_else(|_| panic!("LOOKUP_BITS not set")).parse().unwrap();
+    let range = RangeChip::<F>::default(lookup_bits);
+    let fp_chip = FpChip::<F,CF>::new(&range, params.limb_bits, params.num_limbs);
+    let chip = Chip::<F,CF,SF,GA,L>::new(&fp_chip);
+    let a = chip.lagrange_and_eval(ctx, &[(input[0], input[1])], input[2]);
+    assert_eq!(res.value(), &F::one());
+}
+
+
+}
+
+
+// #[cfg(test)]
+// pub(super) mod test {
+//     use crate::{
+//         piop::sum_check::{evaluate, SumCheck, VirtualPolynomial},
+//         poly::multilinear::{rotation_eval, MultilinearPolynomial},
+//         util::{
+//             expression::Expression,
+//             transcript::{InMemoryTranscript, Keccak256Transcript},
+//         },
+//     };
+//     use halo2_curves::bn256::Fr;
+//     use std::ops::Range;
+
+//     pub fn run_sum_check<S: SumCheck<Fr>>(
+//         num_vars_range: Range<usize>,
+//         expression_fn: impl Fn(usize) -> Expression<Fr>,
+//         param_fn: impl Fn(usize) -> (S::ProverParam, S::VerifierParam),
+//         assignment_fn: impl Fn(usize) -> (Vec<MultilinearPolynomial<Fr>>, Vec<Fr>, Vec<Fr>),
+//         sum: Fr,
+//     ) {
+//         for num_vars in num_vars_range {
+//             let expression = expression_fn(num_vars);
+//             let degree = expression.degree();
+//             let (pp, vp) = param_fn(expression.degree());
+//             let (polys, challenges, y) = assignment_fn(num_vars);
+//             let ys = [y];
+//             let proof = {
+//                 let virtual_poly = VirtualPolynomial::new(&expression, &polys, &challenges, &ys);
+//                 let mut transcript = Keccak256Transcript::default();
+//                 S::prove(&pp, num_vars, virtual_poly, sum, &mut transcript).unwrap();
+//                 transcript.into_proof()
+//             };
+//             let accept = {
+//                 let mut transcript = Keccak256Transcript::from_proof((), proof.as_slice());
+//                 let (x_eval, x) =
+//                     S::verify(&vp, num_vars, degree, Fr::zero(), &mut transcript).unwrap();
+//                 let evals = expression
+//                     .used_query()
+//                     .into_iter()
+//                     .map(|query| {
+//                         let evaluate_for_rotation =
+//                             polys[query.poly()].evaluate_for_rotation(&x, query.rotation());
+//                         let eval = rotation_eval(&x, query.rotation(), &evaluate_for_rotation);
+//                         (query, eval)
+//                     })
+//                     .collect();
+//                 x_eval == evaluate(&expression, num_vars, &evals, &challenges, &[&ys[0]], &x)
+//             };
+//             assert!(accept);
+//         }
+//     }
+
+//     pub fn run_zero_check<S: SumCheck<Fr>>(
+//         num_vars_range: Range<usize>,
+//         expression_fn: impl Fn(usize) -> Expression<Fr>,
+//         param_fn: impl Fn(usize) -> (S::ProverParam, S::VerifierParam),
+//         assignment_fn: impl Fn(usize) -> (Vec<MultilinearPolynomial<Fr>>, Vec<Fr>, Vec<Fr>),
+//     ) {
+//         run_sum_check::<S>(
+//             num_vars_range,
+//             expression_fn,
+//             param_fn,
+//             assignment_fn,
+//             Fr::zero(),
+//         )
+//     }
+
+//     macro_rules! tests {
+//         ($impl:ty) => {
+//             #[test]
+//             fn sum_check_lagrange() {
+//                 use halo2_curves::bn256::Fr;
+//                 use $crate::{
+//                     piop::sum_check::test::run_zero_check,
+//                     poly::multilinear::MultilinearPolynomial,
+//                     util::{
+//                         arithmetic::{BooleanHypercube, Field},
+//                         expression::{CommonPolynomial, Expression, Query, Rotation},
+//                         test::{rand_vec, seeded_std_rng},
+//                         Itertools,
+//                     },
+//                 };
+
+//                 run_zero_check::<$impl>(
+//                     2..4,
+//                     |num_vars| {
+//                         let polys = (0..1 << num_vars)
+//                             .map(|idx| {
+//                                 Expression::<Fr>::Polynomial(Query::new(idx, Rotation::cur()))
+//                             })
+//                             .collect_vec();
+//                         let gates = polys
+//                             .iter()
+//                             .enumerate()
+//                             .map(|(i, poly)| {
+//                                 Expression::CommonPolynomial(CommonPolynomial::Lagrange(i as i32))
+//                                     - poly
+//                             })
+//                             .collect_vec();
+//                         let alpha = Expression::Challenge(0);
+//                         let eq = Expression::eq_xy(0);
+//                         Expression::distribute_powers(&gates, &alpha) * eq
+//                     },
+//                     |_| ((), ()),
+//                     |num_vars| {
+//                         let polys = BooleanHypercube::new(num_vars)
+//                             .iter()
+//                             .map(|idx| {
+//                                 let mut polys =
+//                                     MultilinearPolynomial::new(vec![Fr::zero(); 1 << num_vars]);
+//                                 polys[idx] = Fr::one();
+//                                 polys
+//                             })
+//                             .collect_vec();
+//                         let alpha = Fr::random(seeded_std_rng());
+//                         (polys, vec![alpha], rand_vec(num_vars, seeded_std_rng()))
+//                     },
+//                 );
+//             }
+
+//             #[test]
+//             fn sum_check_rotation() {
+//                 use halo2_curves::bn256::Fr;
+//                 use std::iter;
+//                 use $crate::{
+//                     piop::sum_check::test::run_zero_check,
+//                     poly::multilinear::MultilinearPolynomial,
+//                     util::{
+//                         arithmetic::{BooleanHypercube, Field},
+//                         expression::{Expression, Query, Rotation},
+//                         test::{rand_vec, seeded_std_rng},
+//                         Itertools,
+//                     },
+//                 };
+
+//                 run_zero_check::<$impl>(
+//                     2..16,
+//                     |num_vars| {
+//                         let polys = (-(num_vars as i32) + 1..num_vars as i32)
+//                             .rev()
+//                             .enumerate()
+//                             .map(|(idx, rotation)| {
+//                                 Expression::<Fr>::Polynomial(Query::new(idx, rotation.into()))
+//                             })
+//                             .collect_vec();
+//                         let gates = polys
+//                             .windows(2)
+//                             .map(|polys| &polys[1] - &polys[0])
+//                             .collect_vec();
+//                         let alpha = Expression::Challenge(0);
+//                         let eq = Expression::eq_xy(0);
+//                         Expression::distribute_powers(&gates, &alpha) * eq
+//                     },
+//                     |_| ((), ()),
+//                     |num_vars| {
+//                         let bh = BooleanHypercube::new(num_vars);
+//                         let rotate = |f: &Vec<Fr>| {
+//                             (0..1 << num_vars)
+//                                 .map(|idx| f[bh.rotate(idx, Rotation::next())])
+//                                 .collect_vec()
+//                         };
+//                         let poly = rand_vec(1 << num_vars, seeded_std_rng());
+//                         let polys = iter::successors(Some(poly), |poly| Some(rotate(poly)))
+//                             .map(MultilinearPolynomial::new)
+//                             .take(2 * num_vars - 1)
+//                             .collect_vec();
+//                         let alpha = Fr::random(seeded_std_rng());
+//                         (polys, vec![alpha], rand_vec(num_vars, seeded_std_rng()))
+//                     },
+//                 );
+//             }
+
+//             #[test]
+//             fn sum_check_vanilla_plonk() {
+//                 use halo2_curves::bn256::Fr;
+//                 use $crate::{
+//                     backend::hyperplonk::util::{
+//                         rand_vanilla_plonk_assignment, vanilla_plonk_expression,
+//                     },
+//                     piop::sum_check::test::run_zero_check,
+//                     util::test::{rand_vec, seeded_std_rng},
+//                 };
+
+//                 run_zero_check::<$impl>(
+//                     2..16,
+//                     |num_vars| vanilla_plonk_expression(num_vars),
+//                     |_| ((), ()),
+//                     |num_vars| {
+//                         let (polys, challenges) = rand_vanilla_plonk_assignment(
+//                             num_vars,
+//                             seeded_std_rng(),
+//                             seeded_std_rng(),
+//                         );
+//                         (polys, challenges, rand_vec(num_vars, seeded_std_rng()))
+//                     },
+//                 );
+//             }
+
+//             #[test]
+//             fn sum_check_vanilla_plonk_with_lookup() {
+//                 use halo2_curves::bn256::Fr;
+//                 use $crate::{
+//                     backend::hyperplonk::util::{
+//                         rand_vanilla_plonk_with_lookup_assignment,
+//                         vanilla_plonk_with_lookup_expression,
+//                     },
+//                     piop::sum_check::test::run_zero_check,
+//                     util::test::{rand_vec, seeded_std_rng},
+//                 };
+
+//                 run_zero_check::<$impl>(
+//                     2..16,
+//                     |num_vars| vanilla_plonk_with_lookup_expression(num_vars),
+//                     |_| ((), ()),
+//                     |num_vars| {
+//                         let (polys, challenges) = rand_vanilla_plonk_with_lookup_assignment(
+//                             num_vars,
+//                             seeded_std_rng(),
+//                             seeded_std_rng(),
+//                         );
+//                         (polys, challenges, rand_vec(num_vars, seeded_std_rng()))
+//                     },
+//                 );
+//             }
+//         };
+//     }
+
+//     pub(super) use tests;
+// }
