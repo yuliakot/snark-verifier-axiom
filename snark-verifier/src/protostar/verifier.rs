@@ -72,22 +72,22 @@ const SECURE_MDS: usize = 0;
 
 // check overflow for add/sub_no_carry specially for sum. have done mul with carry everywhere
 #[derive(Debug)]
-pub struct Chip<'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA>
+pub struct Chip<'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA, L>
 where
     GA: CurveAffineExt<Base = CF, ScalarExt = SF>,
     //T: TranscriptRead<GA, Loader<GA>>,
-    //L: Loader<GA>
+    L: Loader<GA>
 {
     pub base_chip: FpChip<'range, F, CF>,  
-    _phantom: PhantomData<(SF, GA)>,
+    _phantom: PhantomData<(SF, GA, L)>,
     //pub scalar_chip: FpChip<'range, F, SF>, 
 }
 
-impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F, CF, SF, GA>
+impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA, L> Chip<'range, F, CF, SF, GA, L>
     where
     GA: CurveAffineExt<Base = CF, ScalarExt = SF>,
     //T: TranscriptRead<GA, Loader<GA>>,
-    //L: Loader<GA>,
+    L: Loader<GA>,
 {   
     // convert crt to fixedcrt
     // https://github.com/axiom-crypto/halo2-lib/blob/f2eacb1f7fdbb760213cf8037a1bd1a10672133f/halo2-ecc/src/fields/fp.rs#L127
@@ -124,8 +124,8 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         b: impl IntoIterator<Item = &'b ProperCrtUint<F>>,
     ) -> Result<ProperCrtUint<F>, Error> {
         
-        let mut a = a.into_iter();
-        let mut b = b.into_iter();        
+        let a = a.into_iter();
+        let b = b.into_iter();        
         let values = a.zip(b).map(|(a, b)| {
             self.base_chip.mul(ctx, a, b)
         }).collect::<Vec<_>>();
@@ -177,12 +177,13 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         self.inner_product(ctx, coeffs, &powers_of_x)
     }
 
+    // too many clones check
     fn lagrange_and_eval(
         &self,
         ctx: &mut Context<F>,
         coords: &[(ProperCrtUint<F>, ProperCrtUint<F>)],
-        x: ProperCrtUint<F>,
-    ) -> (ProperCrtUint<F>, ProperCrtUint<F>) {
+        x: &ProperCrtUint<F>,
+    ) -> Result<ProperCrtUint<F>, Error> {
         assert!(!coords.is_empty(), "coords should not be empty");
         let mut z = self.base_chip.sub_no_carry(ctx, x.clone(), coords[0].0.clone());
         for coord in coords.iter().skip(1) {
@@ -192,6 +193,7 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         let mut eval = None;
         for i in 0..coords.len() {
             // compute (x - x_i) * Prod_{j != i} (x_i - x_j)
+            // todo which denom not used here -- warning: unused variable: `denom`
             let mut denom = self.base_chip.sub_no_carry(ctx, x.clone(), coords[i].0.clone());
             for j in 0..coords.len() {
                 if i == j {
@@ -224,12 +226,7 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
             };
         }
         let out = self.base_chip.mul(ctx, eval.unwrap(), z.clone());
-        let z = FixedCRTInteger::from_native(z.clone().value.to_biguint().unwrap(), 
-                self.base_chip.num_limbs, self.base_chip.limb_bits).assign(
-                ctx,
-                self.base_chip.limb_bits,
-                self.base_chip.native_modulus());
-        (out, z)
+        Ok(out)
     }
 
 
@@ -486,16 +483,16 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
     //     }
     // }
 
-    fn verify_sum_check<const IS_MSG_EVALS: bool, T>(
+    fn verify_sum_check<const IS_MSG_EVALS: bool,T>(
         &self,
         ctx: &mut Context<F>,
         num_vars: usize,
         degree: usize,
         sum: &ProperCrtUint<F>,
-        //transcript: &mut T // impl TranscriptInstruction<F, TccChip = Self>,
+        transcript: &mut T // impl TranscriptInstruction<F, TccChip = Self>,
     ) -> Result<(ProperCrtUint<F>, Vec<ProperCrtUint<F>>), Error> 
     // fix add loader here
-    // where T: TranscriptRead<GA>
+    where T: TranscriptRead<GA,L>
     {
         let points = iter::successors(Some(GA::Base::zero()), move |state| Some(GA::Base::one() + state)).take(degree + 1).collect_vec();
         let points = points
@@ -507,33 +504,38 @@ impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA> Chip<'range, F,
         let mut sum = Cow::Borrowed(sum);
         let mut x = Vec::with_capacity(num_vars);
         //let mut transcript = PoseidonTranscript::<NativeLoader, _>; 
-        // for _ in 0..num_vars{
-        //     let msg = transcript.read_n_scalars(degree + 1);
-        //     x.push(transcript.squeeze_challenge().as_ref().clone());
+        for _ in 0..num_vars{
+            let msg = transcript.read_n_scalars(degree + 1);
+            x.push(transcript.squeeze_challenge().as_ref().clone());
 
-        //     let sum_from_evals = if IS_MSG_EVALS {
-        //         self.base_chip.add_no_carry(ctx, &msg[0], &msg[1])
-        //     } else {
-        //         self.sum(ctx, chain![[&msg[0], &msg[0]], &msg[1..]])
-        //     };
-        //     self.base_chip.assert_equal( ctx, &*sum, &sum_from_evals);
+            let msg = Vec::with_capacity(num_vars);
+            let sum_from_evals = if IS_MSG_EVALS {
+                FixedCRTInteger::from_native(self.base_chip.add_no_carry(ctx, &msg[0], &msg[1]).value.to_biguint().unwrap(), 
+                self.base_chip.num_limbs, self.base_chip.limb_bits).assign(
+                ctx,
+                self.base_chip.limb_bits,
+                self.base_chip.native_modulus())
+            } else {
+                self.sum(ctx, chain![[&msg[0], &msg[0]], &msg[1..]]).unwrap()
+            };
+            self.base_chip.assert_equal( ctx, &*sum, &sum_from_evals);
 
-        //     let coords = points
-        //     .iter()
-        //     .cloned()
-        //     .zip(msg.iter().cloned())
-        //     .collect();
+            let coords:Vec<_> = points
+            .iter()
+            .cloned()
+            .zip(msg.iter().cloned())
+            .collect();
 
-        //     if IS_MSG_EVALS {
-        //         sum = Cow::Owned(self.lagrange_and_eval(
-        //             ctx,
-        //             &coords,
-        //             x.last().unwrap(),
-        //         ));
-        //     } else {
-        //         sum = Cow::Owned(self.horner(ctx, &msg, x.last().unwrap())?);
-        //     };
-        // }
+            if IS_MSG_EVALS {
+                sum = Cow::Owned(self.lagrange_and_eval(
+                    ctx,
+                    &coords,
+                    &x.last().unwrap(),
+                ).unwrap());
+            } else {
+                sum = Cow::Owned(self.horner(ctx, &msg, &x.last().unwrap()).unwrap());
+            };
+        }
 
         Ok((sum.into_owned(), x))
     }
