@@ -72,21 +72,22 @@ const SECURE_MDS: usize = 0;
 
 // check overflow for add/sub_no_carry specially for sum. have done mul with carry everywhere
 #[derive(Clone, Debug)]
-pub struct Chip<'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA, L>
+pub struct Chip<'range, F, CF, GA, L>
 where
-    GA: CurveAffineExt<Base = CF, ScalarExt = SF>,
-    //T: TranscriptRead<GA, Loader<GA>>,
-    L: Loader<GA>
+    CF: PrimeField,
+    F: PrimeField,
+    GA: CurveAffineExt<Base = CF, ScalarExt = F>,
+    L: Loader<GA>,
 {
     pub base_chip: FpChip<'range, F, CF>,  
-    _marker: PhantomData<(SF, GA, L)>,
-    //pub scalar_chip: FpChip<'range, F, SF>, 
+    _marker: PhantomData<(GA, L)>,
 }
 
-impl <'range, F: PrimeField, CF: PrimeField, SF: PrimeField, GA, L> Chip<'range, F, CF, SF, GA, L>
+impl <'range, F, CF, GA, L> Chip<'range, F, CF, GA, L>
     where
-    GA: CurveAffineExt<Base = CF, ScalarExt = SF>,
-    //T: TranscriptRead<GA, Loader<GA>>,
+    CF: PrimeField,
+    F: PrimeField,
+    GA: CurveAffineExt<Base = CF, ScalarExt = F>,
     L: Loader<GA>,
 {   
     // convert crt to properuint
@@ -1036,7 +1037,7 @@ mod test {
 use halo2_base::halo2_proofs::{
     arithmetic::CurveAffine,
     dev::MockProver,
-    halo2curves::bn256::Fr,
+    halo2curves::bn256::{self,Fr},
 };
 use halo2_base::gates::{
     builder::{
@@ -1046,7 +1047,7 @@ use halo2_base::gates::{
 };
 use halo2_base::utils::{biguint_to_fe, fe_to_biguint, modulus, CurveAffineExt, ScalarField};
 use halo2_base::Context;
-use halo2_ecc::fields::{fp::FpChip, FieldChip, PrimeField};
+use halo2_ecc::{bn254::FpChip,fields::{FieldChip, PrimeField}};
 
 // Current crate and module
 use crate::loader::{
@@ -1061,35 +1062,32 @@ use super::Chip;
 
 
 #[test_case(&[0, 1, 2].map(Fr::from) => (Fr::one(), Fr::from(2)) ; "lagrange_eval(): constant fn")]
-pub fn test_lagrange_eval<F: PrimeField, CF: PrimeField, SF: PrimeField, GA:CurveAffineExt<Base = CF, ScalarExt = SF>, L:Loader<GA>>(input: &[F]) -> (F, F) {
+pub fn test_lagrange_eval<F: PrimeField, CF: PrimeField, GA:CurveAffineExt<Base = CF, ScalarExt = F>, L:Loader<GA>>(input: &[F]) -> (F, F) {
     let mut builder = GateThreadBuilder::mock();
     let ctx = builder.main(0);
     let input = ctx.assign_witnesses(input.iter().copied());
-    std::env::set_var("LOOKUP_BITS", params.lookup_bits.to_string());
-    let range = RangeChip::<F>::default(params.lookup_bits);
-    let fp_chip = FpChip::<F,CF>::new(&range, params.limb_bits, params.num_limbs);
-    let chip = Chip::<F,CF,SF,GA,L>::new(&fp_chip);
+    let lookup_bits = var("LOOKUP_BITS").unwrap().parse().unwrap();
+    let range = RangeChip::<Fr>::default(lookup_bits);
+    let fp_chip = FpChip::<Fr>::new(&range, BITS, LIMBS);
+    let chip = Chip::new(&fp_chip);
     let a = chip.lagrange_and_eval(ctx, &[(input[0], input[1])], input[2]);
     (*a.0.value(), *a.1.value())
 }
 
-pub fn lagrange_and_eval_test<F, CF, SF, GA, L>(
+pub fn lagrange_and_eval_test<F, CF, GA, L>(
     ctx: &mut Context<F>,
     params: CircuitParams,
 )
 where
-    F: PrimeField,
     CF: PrimeField,
-    SF: PrimeField,
-    GA: CurveAffineExt<Base = CF, ScalarExt = SF>,
+    F: PrimeField,
+    GA: CurveAffineExt<Base = CF, ScalarExt = F>,
     L: Loader<GA>,
  {
-    // always use this to define `lookup_bits`
-    let lookup_bits =
-    var("LOOKUP_BITS").unwrap_or_else(|_| panic!("LOOKUP_BITS not set")).parse().unwrap();
-    let range = RangeChip::<F>::default(lookup_bits);
-    let fp_chip = FpChip::<F,CF>::new(&range, params.limb_bits, params.num_limbs);
-    let chip = Chip::<F,CF,SF,GA,L>::new(&fp_chip);
+    let lookup_bits = var("LOOKUP_BITS").unwrap().parse().unwrap();
+    let range = RangeChip::<Fr>::default(lookup_bits);
+    let fp_chip = FpChip::new(&range, BITS, LIMBS);
+    let chip = Chip::<_,_,bn256::G1Affine,NativeLoader>::new(&fp_chip);
     let a = chip.lagrange_and_eval(ctx, &[(input[0], input[1])], input[2]);
     assert_eq!(res.value(), &F::one());
 }
