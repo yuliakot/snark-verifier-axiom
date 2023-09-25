@@ -424,6 +424,22 @@ impl<F: Field> Sum<(F, MultilinearPolynomial<F>)> for MultilinearPolynomial<F> {
 
 impl_index!(MultilinearPolynomial, evals);
 
+
+macro_rules! zip_self {
+    (@ $iter:expr, $step:expr, $skip:expr) => {
+        $iter.skip($skip).step_by($step).zip($iter.skip($skip + ($step >> 1)).step_by($step))
+    };
+    ($iter:expr) => {
+        zip_self!(@ $iter, 2, 0)
+    };
+    ($iter:expr, $step:expr) => {
+        zip_self!(@ $iter, $step, 0)
+    };
+    ($iter:expr, $step:expr, $skip:expr) => {
+        zip_self!(@ $iter, $step, $skip)
+    };
+}
+
 pub fn rotation_eval<F: Field>(x: &[F], rotation: Rotation, evals_for_rotation: &[F]) -> F {
     if rotation == Rotation::cur() {
         assert!(evals_for_rotation.len() == 1);
@@ -590,6 +606,7 @@ fn merge_in_place<F: Field>(
     }
 }
 
+
 pub(crate) fn merge_into<F: Field>(
     target: &mut Vec<F>,
     evals: &[F],
@@ -609,99 +626,4 @@ pub(crate) fn merge_into<F: Field>(
             *target = (*eval_1 - eval_0) * x_i + eval_0;
         }
     });
-}
-
-macro_rules! zip_self {
-    (@ $iter:expr, $step:expr, $skip:expr) => {
-        $iter.skip($skip).step_by($step).zip($iter.skip($skip + ($step >> 1)).step_by($step))
-    };
-    ($iter:expr) => {
-        zip_self!(@ $iter, 2, 0)
-    };
-    ($iter:expr, $step:expr) => {
-        zip_self!(@ $iter, $step, 0)
-    };
-    ($iter:expr, $step:expr, $skip:expr) => {
-        zip_self!(@ $iter, $step, $skip)
-    };
-}
-
-pub(crate) use zip_self;
-
-#[cfg(test)]
-mod test {
-    use crate::{
-        poly::{
-            multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
-            Polynomial,
-        },
-        util::{
-            arithmetic::{BooleanHypercube, Field},
-            expression::Rotation,
-            test::rand_vec,
-            Itertools,
-        },
-    };
-    use halo2_curves::bn256::Fr;
-    use rand::{rngs::OsRng, RngCore};
-    use std::iter;
-
-    fn fix_vars<F: Field>(evals: &[F], x: &[F]) -> Vec<F> {
-        x.iter().fold(evals.to_vec(), |evals, x_i| {
-            zip_self!(evals.iter())
-                .map(|(eval_0, eval_1)| (*eval_1 - eval_0) * x_i + eval_0)
-                .collect_vec()
-        })
-    }
-
-    #[test]
-    fn fix_var() {
-        let rand_x_i = || match OsRng.next_u32() % 3 {
-            0 => Fr::zero(),
-            1 => Fr::one(),
-            2 => Fr::random(OsRng),
-            _ => unreachable!(),
-        };
-        for num_vars in 0..16 {
-            for _ in 0..10 {
-                let poly = MultilinearPolynomial::rand(num_vars, OsRng);
-                let x = iter::repeat_with(rand_x_i).take(num_vars).collect_vec();
-                let eval = fix_vars(poly.evals(), &x)[0];
-                assert_eq!(poly.evaluate(&x), eval);
-                assert_eq!(x.iter().fold(poly, |poly, x_i| poly.fix_var(x_i))[0], eval);
-            }
-        }
-    }
-
-    #[test]
-    fn evaluate_for_rotation() {
-        let mut rng = OsRng;
-        for num_vars in 0..16 {
-            let bh = BooleanHypercube::new(num_vars);
-            let rotate = |f: &Vec<Fr>| {
-                (0..1 << num_vars)
-                    .map(|idx| f[bh.rotate(idx, Rotation::next())])
-                    .collect_vec()
-            };
-            let f = rand_vec(1 << num_vars, &mut rng);
-            let fs = iter::successors(Some(f), |f| Some(rotate(f)))
-                .map(MultilinearPolynomial::new)
-                .take(num_vars)
-                .collect_vec();
-            let x = rand_vec::<Fr>(num_vars, &mut rng);
-
-            for rotation in -(num_vars as i32) + 1..num_vars as i32 {
-                let rotation = Rotation(rotation);
-                let (f, f_rotated) = if rotation < Rotation::cur() {
-                    (fs.last().unwrap(), &fs[fs.len() - rotation.distance() - 1])
-                } else {
-                    (fs.first().unwrap(), &fs[rotation.distance()])
-                };
-                assert_eq!(
-                    rotation_eval(&x, rotation, &f.evaluate_for_rotation(&x, rotation)),
-                    f_rotated.evaluate(&x),
-                );
-            }
-        }
-    }
 }

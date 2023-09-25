@@ -458,7 +458,7 @@ fn prev(b: usize, x_inv: usize) -> usize {
 
 #[cfg(test)]
 mod test {
-    use crate::util::{arithmetic::BooleanHypercube, expression::Rotation};
+    use crate::util::{arithmetic::BooleanHypercube};
 
     #[test]
     #[ignore = "cause it takes some minutes to run with release profile"]
@@ -476,6 +476,7 @@ mod test {
     #[test]
     #[ignore = "cause it takes some minutes to run with release profile"]
     fn boolean_hypercube_prev() {
+        use super::Rotation;
         for num_vars in 0..32 {
             let bh = BooleanHypercube::new(num_vars);
             for (b, b_next) in bh.iter().skip(1).zip(bh.iter().skip(2).chain(Some(1))) {
