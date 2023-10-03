@@ -5,6 +5,10 @@ Let $(f_0, f_1, \ldots, f_n)$, $(g_0, g_1, \ldots, g_n)$ be two sets of numbers.
 
 **Goal:** prove that $f_0g_0 + f_1g_1 + \ldots = u$.
 
+### Algorithm
+*todo*
+
+### Explanation
 **Step #1:** We compute single-variate polynomials 
 
 $$f(X) = \sum_i f_i X^i$$
