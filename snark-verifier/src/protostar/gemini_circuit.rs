@@ -86,19 +86,20 @@ where
     GA: CurveAffineExt<Base = CF, ScalarExt = F>,
     L: Loader<GA>,
 {
-    fn sum_check(&self, ctx: &mut Context<F>,
-        numbers: Vec<&EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
-        target: EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>,
-    );
-
     fn commit_polynomial(
         &self,
-        polynomial: Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+    ) -> EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>;
+ 
+    fn evaluate_polynomial_at_a_point(
+        &self,
+        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        point: AssignedValue<F>,
     ) -> EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>;
     
     fn batch_commit_polynomial(
         &self,
-        polynomials: Vec<Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>>,
+        polynomials: &Vec<Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>>,
     ) -> Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>;
 
     fn verify_kzg(
@@ -117,8 +118,8 @@ where
         &self,
         //builder: &mut GateThreadBuilder<F>, (?)
         ctx: &mut Context<F>,
-        polynomial: Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
-        points: Vec<AssignedValue<F>>,
+        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        points: &Vec<AssignedValue<F>>,
     ) -> Vec<Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>>;
 
     
@@ -127,8 +128,8 @@ where
         &self,
         ctx: &mut Context<F>,
         num_var: u64,
-        polynomial: Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
-        transcript: GeminiTranscript<'range, F, CF>,
+        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        transcript: &mut GeminiTranscript<'range, F, CF>,
     ) -> GeminiTranscript<'range, F, CF>;
 }
 
@@ -140,27 +141,34 @@ impl <'range, F, CF, GA, L> GeminiChip<'range, F, CF, GA, L> for &EccChip<'range
     GA: CurveAffineExt<Base = CF, ScalarExt = F>,
     L: Loader<GA>,
 {   
-    fn sum_check(&self, ctx: &mut Context<F>,
-        numbers: Vec<&EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
-        target: EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>,
-    ){
-        unimplemented!()
-    }
- 
     fn commit_polynomial(
         &self,
-        polynomial: Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
     ) -> EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>
         {
+            //kzg commitment
             unimplemented!()
         }
+    
+    fn evaluate_polynomial_at_a_point(
+        &self,
+        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        point: AssignedValue<F>,
+    ) -> EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>
+    // thank you enrico!
+    {
+        
+        unimplemented!()
+
+    }
+    
         
     fn batch_commit_polynomial(
         &self,
-        polynomials: Vec<Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>>,
+        polynomials: &Vec<Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>>,
     ) -> Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>
         {
-            polynomials.iter().map(|x| <&EccChip<'_, F, FpChip<'_, F, CF>> as GeminiChip<'_, F, CF, GA, L>>::commit_polynomial(self, x.to_vec())).collect()
+            polynomials.iter().map(|x| <&EccChip<'_, F, FpChip<'_, F, CF>> as GeminiChip<'_, F, CF, GA, L>>::commit_polynomial(self, x)).collect()
         }
 
     fn verify_kzg(
@@ -201,10 +209,12 @@ impl <'range, F, CF, GA, L> GeminiChip<'range, F, CF, GA, L> for &EccChip<'range
         &self,
         //builder: &mut GateThreadBuilder<F>, (?)
         ctx: &mut Context<F>,
-        polynomial: Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
-        points: Vec<AssignedValue<F>>,
+        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        points: &Vec<AssignedValue<F>>,
     ) -> Vec<Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>>
         {
+            let polynomial = polynomial.to_vec();
+            let points = points.to_vec();
             let mut ans = vec![];
             let curr = polynomial;
 
@@ -228,33 +238,32 @@ impl <'range, F, CF, GA, L> GeminiChip<'range, F, CF, GA, L> for &EccChip<'range
         &self,
         ctx: &mut Context<F>,
         num_var: u64,
-        polynomial: Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
-        transcript: GeminiTranscript<'range, F, CF>,
+        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        transcript: &mut GeminiTranscript<'range, F, CF>,
     ) -> GeminiTranscript<'range, F, CF>
     //should output updated transcript
     {
 
         assert!(num_var as f64 >= (polynomial.len() as f64).log2());
         
-        let mut transcript = transcript;
+        let mut transcript = transcript.to_owned();
 
         let &beta = transcript.challenges.last().unwrap();
         
-        let mut challenges = vec![beta];
+        let challenges = &mut vec![beta];
 
         for _ in 0..(num_var - 1){
             let beta = self.field_chip.gate().mul(ctx, beta, beta);
             challenges.push(beta);
         }
-        let polynomials = <&EccChip<'_, F, FpChip<'_, F, CF>> as GeminiChip<'_, F, CF, GA, L>>::fold_polynomial(self, ctx, polynomial, challenges);
 
-
-        let commitments = <&EccChip<'_, F, FpChip<'_, F, CF>> as GeminiChip<'_, F, CF, GA, L>>::batch_commit_polynomial(self, polynomials);
+        let polynomials = &<&EccChip<'_, F, FpChip<'_, F, CF>> as GeminiChip<'_, F, CF, GA, L>>::fold_polynomial(self, ctx, polynomial, challenges);
+        let commitments = &<&EccChip<'_, F, FpChip<'_, F, CF>> as GeminiChip<'_, F, CF, GA, L>>::batch_commit_polynomial(self, polynomials);
 
         
-//        transcript.challenges.extend(challenges);
-//        transcript.polynomials.extend(polynomials);
-//        transcript.commitments.extend(commitments);
+        transcript.challenges.extend(challenges.to_vec());
+        transcript.polynomials.extend(polynomials.to_vec());
+        transcript.commitments.extend(commitments.to_vec());
 //
 
         // todo: add evaluations to the transcript
