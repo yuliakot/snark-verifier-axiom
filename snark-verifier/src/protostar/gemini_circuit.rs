@@ -15,7 +15,7 @@ use halo2_base::{
     utils::{CurveAffineExt, ScalarField, BigPrimeField},
     gates::range::{RangeChip},
     AssignedValue,
-    halo2_proofs,
+    halo2_proofs::{self, plonk::Challenge},
     Context,
     QuantumCell::{Constant, Existing, Witness, WitnessFraction, self},
 };
@@ -69,21 +69,19 @@ const WINDOW_BITS: usize = 420;
 
 
 #[derive(Debug, Clone)]
-pub struct GeminiTranscript<'range, F, CF>
+pub struct GeminiTranscript<F>
 where
-    CF: PrimeField,
     F: BigPrimeField,
     {
-        pub polynomials: Vec<Vec<EcPoint<F, <FpChip<'range, F, CF> as FieldChip<F>>::FieldPoint>>>,
+        pub polynomials: Vec<Vec<AssignedValue<F>>>,
         pub challenges: Vec<AssignedValue<F>>,
-        pub commitments: Vec<EcPoint<F, <FpChip<'range, F, CF> as FieldChip<F>>::FieldPoint>>,
-        pub evaluations: Vec<EcPoint<F, <FpChip<'range, F, CF> as FieldChip<F>>::FieldPoint>>,
+        pub commitments: Vec<AssignedValue<F>>,
+        pub evaluations: Vec<AssignedValue<F>>,
 
         _anything_else_question_mark: Vec<AssignedValue<F>>,
     }
-impl<'range, F, CF> GeminiTranscript<'range, F, CF>
+impl<F> GeminiTranscript<F>
 where
-    CF: PrimeField,
     F: BigPrimeField,{
 
         fn default(_ctx: &mut Context<F>) -> Self{
@@ -93,7 +91,7 @@ where
         fn push_random_challenge(&mut self, ctx: &mut Context<F>,)
         // for testing mostly
         {
-            let mut rng = rand::thread_rng();
+            let rng = rand::thread_rng();
             let x = F::random(rng);
             let x = ctx.load_witness(x);
             self.challenges.push(x);
@@ -106,11 +104,21 @@ where
             self.challenges.push(x);
         }
 
-        fn push_polynomial<GA: CurveAffineExt<Base = CF, ScalarExt = F>>(&mut self, ctx: &mut Context<F>, chip: &EccChip<'range, F, FpChip<'range, F, CF>>, polynomial: &Vec<(CF, CF)>)
-        // for testing mostly
+        //fn push_polynomial<'range, CF: ScalarField + std::convert::From<[u64; 4]>>(&mut self, ctx: &mut Context<F>, chip: &<'range, CF, FpChip<'range, CF, F>> , polynomial: &Vec<(F, F)>)
+        //{
+        //    let polynomial: Vec<_> = polynomial.iter().map(|&p| chip.load_private(ctx, p)).collect();
+        //    self.polynomials.push(polynomial);
+        //}
+
+        fn push_eval(&mut self)
         {
-            let polynomial: Vec<_> = polynomial.iter().map(|&p| chip.load_private::<GA>(ctx, p)).collect();
-            self.polynomials.push(polynomial);
+            unimplemented!()
+        }
+
+
+        fn push_commitment(&mut self)
+        {
+            unimplemented!()
         }
 
         
@@ -119,67 +127,62 @@ where
 }
 
 
-pub trait GeminiChip<'range, F, CF, >
+pub trait GeminiChip<F>
 where
-    CF: PrimeField,
     F: BigPrimeField,
 {
     //type GA: CurveAffineExt;
 
     fn commit_polynomial(
         &self,
-        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
-    ) -> EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>;
+        ctx: &mut Context<F>,
+        polynomial: &Vec<AssignedValue<F>>,
+    ) -> AssignedValue<F>;
  
     fn evaluate_polynomial_at_a_point(
         &self,
-        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        polynomial: &Vec<AssignedValue<F>>,
         point: AssignedValue<F>,
-    ) -> EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>;
+    ) -> AssignedValue<F>;
     
     fn batch_commit_polynomial(
         &self,
-        polynomials: &Vec<Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>>,
-    ) -> Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>;
+        ctx: &mut Context<F>,
+        polynomials: &Vec<Vec<AssignedValue<F>>>,
+    ) -> Vec<AssignedValue<F>>;
 
     fn verify_kzg(
         &self,) -> Result<(), Error>;
         
-    fn fold_polynomial_one_step<GA>(
+    fn fold_polynomial_one_step(
         &self,
         //builder: &mut GateThreadBuilder<F>, (?)
         ctx: &mut Context<F>,
-        polynomial: (EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>, EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>), 
+        polynomial: (AssignedValue<F>, AssignedValue<F>), 
         challenge: AssignedValue<F>,
-    ) -> EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>
-    where
-    GA: CurveAffineExt<Base = CF, ScalarExt = F>;
+    ) -> AssignedValue<F>;
 
-    fn fold_polynomial<GA>(
+    fn fold_polynomial(
         &self,
         //builder: &mut GateThreadBuilder<F>, (?)
         ctx: &mut Context<F>,
-        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        polynomial: &Vec<AssignedValue<F>>,
         points: &Vec<AssignedValue<F>>,
-    ) -> Vec<Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>>
-    where
-    GA: CurveAffineExt<Base = CF, ScalarExt = F>;
+    ) -> Vec<Vec<AssignedValue<F>>>;
 
     
 
-    fn gemini_full<GA>(
+    fn gemini_full(
         &self,
         ctx: &mut Context<F>,
-        transcript: &mut GeminiTranscript<'range, F, CF>,
-    ) -> GeminiTranscript<'range, F, CF>
-    where
-    GA: CurveAffineExt<Base = CF, ScalarExt = F>;
+        transcript: &mut GeminiTranscript<F>,
+        polynomial: &Vec<AssignedValue<F>>,
+    ) -> GeminiTranscript<F>;
 }
 
 
-impl <'range, F, CF, > GeminiChip<'range, F, CF, > for &EccChip<'range, F, FpChip<'range, F, CF>>
+impl <F> GeminiChip<F> for &GateChip<F>
     where
-    CF: PrimeField,
     F: PrimeField,
 {   
     
@@ -187,32 +190,37 @@ impl <'range, F, CF, > GeminiChip<'range, F, CF, > for &EccChip<'range, F, FpChi
 
     fn commit_polynomial(
         &self,
-        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
-    ) -> EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>
+        ctx: &mut Context<F>,
+        polynomial: &Vec<AssignedValue<F>>,
+    ) -> AssignedValue<F>
         {
+            let challenge = ctx.load_constant(F::from(5));
+            self.evaluate_polynomial_at_a_point(polynomial, challenge)
             //kzg commitment
-            unimplemented!()
+            //unimplemented!()
         }
     
     fn evaluate_polynomial_at_a_point(
         &self,
-        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        polynomial: &Vec<AssignedValue<F>>,
         point: AssignedValue<F>,
-    ) -> EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>
+    ) -> AssignedValue<F>
     // thank you enrico!
     {
         
-        unimplemented!()
-
+        //unimplemented!()
+        polynomial.iter().next().unwrap().to_owned()
+        
     }
     
         
     fn batch_commit_polynomial(
         &self,
-        polynomials: &Vec<Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>>,
-    ) -> Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>
+        ctx: &mut Context<F>,
+        polynomials: &Vec<Vec<AssignedValue<F>>>,
+    ) -> Vec<AssignedValue<F>>
         {
-            polynomials.iter().map(|x| <&EccChip<'_, F, FpChip<'_, F, CF>> as GeminiChip<'_, F, CF, >>::commit_polynomial(self, x)).collect()
+            polynomials.iter().map(|x| self.commit_polynomial(ctx, x)).collect()
         }
 
     fn verify_kzg(
@@ -228,45 +236,41 @@ impl <'range, F, CF, > GeminiChip<'range, F, CF, > for &EccChip<'range, F, FpChi
     // 
     // outputs (1-c0)p0 +  c0 p1
 
-    fn fold_polynomial_one_step<GA>(
+    fn fold_polynomial_one_step(
         &self,
         //builder: &mut GateThreadBuilder<F>, (?)
         ctx: &mut Context<F>,
-        (p0, p1): (EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>, EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>), 
+        (p0, p1): (AssignedValue<F>, AssignedValue<F>), 
         challenge: AssignedValue<F>,
-    ) -> EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>
-    where
-    GA: CurveAffineExt<Base = CF, ScalarExt = F>,
+    ) -> AssignedValue<F>
         {
             let max_bits = MAX_BITS;
             let window_bits = WINDOW_BITS;
 
             let p0_clone = p0.clone();
             
-            let step1 = self.negate(ctx, p0);
-            let step2 = self.add_unequal(ctx, p1, step1, false);
-            let step3 = self.scalar_mult::<GA>(ctx, step2, vec![challenge], max_bits, window_bits);
-            assert!(&p0_clone.x.value() != &step3.x.value());
+            let step1 = self.neg(ctx, p0);
+            let step2 = self.add(ctx, p1, step1);
+            let step3 = self.mul(ctx, step2, challenge);
+            assert!(&p0_clone.value() != &step3.value());
 
-            let step4 = self.add_unequal(ctx, step3, p0_clone, false);
+            let step4 = self.add(ctx, step3, p0_clone);
             step4   
         }
         
      
 
-    fn fold_polynomial<GA>(
+    fn fold_polynomial(
         &self,
         //builder: &mut GateThreadBuilder<F>, (?)
         ctx: &mut Context<F>,
-        polynomial: &Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>,
+        polynomial: &Vec<AssignedValue<F>>,
         points: &Vec<AssignedValue<F>>,
-    ) -> Vec<Vec<EcPoint<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>>>
-    where
-    GA: CurveAffineExt<Base = CF, ScalarExt = F>,
+    ) -> Vec<Vec<AssignedValue<F>>>
         {
 
             let polynomial = polynomial.to_vec();
-            let points = points.to_vec();
+            //let points = points.to_vec();
             let mut ans = vec![];
             let curr = polynomial;
 
@@ -275,20 +279,16 @@ impl <'range, F, CF, > GeminiChip<'range, F, CF, > for &EccChip<'range, F, FpChi
                 let mut poly_odd: Vec<_> = curr.iter().skip(1).step_by(2).collect();
 
                 // if poly_odd is shorter than poly_even, it is necessary to add zero at the end to poly_odd. otherwise this is harmless to add zero to poly_odd.
-                let zero = { 
-                    let fof_zero = FixedOverflowInteger {  limbs: vec![F::zero()],  };
-                    let fcrt_zero = FixedCRTInteger::new(fof_zero, BigUint::zero());
-                    let zero = fcrt_zero.assign(ctx, 1, self.field_chip.native_modulus());
-                    EcPoint::new(zero.clone(), zero)
-                };
+                let zero = ctx.load_zero();
 
                 poly_odd.push(&zero);
+
 
                 let curr: Vec<_> = 
                         poly_even.iter()
                             .zip(poly_odd)
-                            .map(|(x, y)| <&EccChip<'_, F, FpChip<'_, F, CF>> as GeminiChip<'_, F, CF, >>::fold_polynomial_one_step::<GA>(self, ctx, (x.to_owned().to_owned(), y.to_owned()), c))
-                            .collect();
+                            .zip(points)
+                            .map(|((&&x, &y), &point)| self.fold_polynomial_one_step(ctx, (x, y), point)).collect();
                 ans.push(curr.to_vec());
             }
 
@@ -296,18 +296,14 @@ impl <'range, F, CF, > GeminiChip<'range, F, CF, > for &EccChip<'range, F, FpChi
 
         }
 
-    fn gemini_full<GA>(
+    fn gemini_full(
         &self,
         ctx: &mut Context<F>,
-        transcript: &mut GeminiTranscript<'range, F, CF>,
-    ) -> GeminiTranscript<'range, F, CF>
-    where
-    GA: CurveAffineExt<Base = CF, ScalarExt = F>,
+        transcript: &mut GeminiTranscript<F>,
+        polynomial: &Vec<AssignedValue<F>>,
+    ) -> GeminiTranscript<F>
     //should output updated transcript
     {
-
-        let polynomial = transcript.polynomials.last().unwrap();
-
         let num_var  = (polynomial.len() as f64).log2() as u64;
         
         let mut transcript = transcript.to_owned();
@@ -317,12 +313,12 @@ impl <'range, F, CF, > GeminiChip<'range, F, CF, > for &EccChip<'range, F, FpChi
         let challenges = &mut vec![beta];
 
         for _ in 0..(num_var - 1){
-            let beta = self.field_chip.gate().mul(ctx, beta, beta);
+            let beta = self.mul(ctx, beta, beta);
             challenges.push(beta);
         }
 
-        let polynomials = &<&EccChip<'_, F, FpChip<'_, F, CF>> as GeminiChip<'_, F, CF, >>::fold_polynomial::<GA>(self, ctx, polynomial, challenges);
-        let commitments = &<&EccChip<'_, F, FpChip<'_, F, CF>> as GeminiChip<'_, F, CF, >>::batch_commit_polynomial(self, polynomials);
+        let polynomials = self.fold_polynomial(ctx, polynomial, challenges);
+        let commitments = self.batch_commit_polynomial(ctx, &polynomials);
 
         
         transcript.challenges.extend(challenges.to_vec());
